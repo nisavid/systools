@@ -35,3 +35,15 @@ _Avoid_: Server, worker
 **Probe**:
 A liveness and model-introspection observation of a running inference server.
 _Avoid_: Ping, status request
+
+**Request Metric Event**:
+An immutable observation of one inference request's identity, timing, outcome, and available usage totals.
+_Avoid_: Request log, trace
+
+**Process Sample**:
+An immutable point-in-time observation of one inference process's resource use.
+_Avoid_: Request Metric Event
+
+**Metric Query**:
+A selection of Request Metric Events and Process Samples for grouped server and model summaries.
+_Avoid_: Database query
