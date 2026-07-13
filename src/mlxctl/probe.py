@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 
@@ -37,9 +38,12 @@ def _read_json(url: str, timeout_seconds: float) -> Any:
     try:
         with urlopen(url, timeout=timeout_seconds) as response:
             return json.loads(response.read())
+    except HTTPError as error:
+        error.close()
+        raise ProbeError(f"GET {url} failed: {error}") from error
     except (
-        URLError,
-        TimeoutError,
+        OSError,
+        http.client.HTTPException,
         ValueError,
         json.JSONDecodeError,
         UnicodeDecodeError,

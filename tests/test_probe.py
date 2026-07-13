@@ -1,4 +1,6 @@
 import json
+import socket
+import struct
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,6 +65,15 @@ class ProbeTests(unittest.TestCase):
                     else:
                         probe_readiness(base_url)
 
+    def test_normalizes_connection_reset_during_response_for_both_probes(self) -> None:
+        for probe in (probe_liveness, probe_readiness):
+            for endpoint in (self._reset_during_response, self._truncate_response):
+                with self.subTest(probe=probe.__name__, failure=endpoint.__name__):
+                    base_url = endpoint()
+
+                    with self.assertRaisesRegex(ProbeError, "GET .* failed"):
+                        probe(base_url)
+
     def _serve(self, payloads: dict[str, object]) -> str:
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
@@ -87,6 +98,43 @@ class ProbeTests(unittest.TestCase):
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         host, port = server.server_address
+        return f"http://{host}:{port}"
+
+    def _reset_during_response(self) -> str:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+
+        def reset() -> None:
+            connection, _ = listener.accept()
+            connection.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            connection.close()
+
+        thread = threading.Thread(target=reset, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(listener.close)
+        host, port = listener.getsockname()
+        return f"http://{host}:{port}"
+
+    def _truncate_response(self) -> str:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+
+        def truncate() -> None:
+            connection, _ = listener.accept()
+            connection.recv(4096)
+            connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{")
+            connection.close()
+
+        thread = threading.Thread(target=truncate, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(listener.close)
+        host, port = listener.getsockname()
         return f"http://{host}:{port}"
 
 
