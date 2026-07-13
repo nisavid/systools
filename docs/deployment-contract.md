@@ -43,8 +43,17 @@ retention settings. File format decided separately (see wayfinder ticket
 
 ### State directory (`~/.local/state/mlxd/`)
 
-Runtime state: supervisor PID file, control socket, metrics database
-(SQLite, see wayfinder ticket #6).
+Runtime state: supervisor lifecycle state, the `mlxd.sock` control socket,
+and the `metrics.db` SQLite database. The directory is mode `0700`; the
+socket, database, and lifecycle state files are mode `0600`.
+
+## Control Protocol v1
+
+`mlxctl` connects to `mlxd.sock` using newline-delimited JSON over a Unix
+socket. Each connection carries one versioned request and one response.
+The protocol supports server start, stop, status, advertised-model, and
+metric-summary commands. `mlxd` rejects malformed, unsupported, unknown,
+and oversized requests without exposing machine-local paths or tracebacks.
 
 ### Log directory (`~/Library/Logs/mlxd/`)
 
@@ -64,21 +73,19 @@ The plist sets these in `EnvironmentVariables`:
 
 ## LaunchAgent Behavior
 
-- `RunAtLoad=false` — disabled by default; the service does not start on
-  login.
+- `RunAtLoad=false` — the registered service does not start on login.
 - `KeepAlive=false` — launchd does not auto-restart the supervisor.
-- The user starts inference explicitly via `mlxctl start <server>`.
-- The plist is installed but unloaded. The user loads it via
-  `launchctl load` or `mlxctl service install` (future).
+- The deployment layer registers the plist in the user's launchd domain.
+- When the control socket is absent, `mlxctl` runs `launchctl kickstart`
+  for `io.nisavid.mlxd` and waits boundedly for the socket.
+- The user starts inference explicitly via `mlxctl start <server>`; the
+  daemon exits after its idle grace once no managed servers remain active.
 
 ## Follow-up (Not in v1)
 
 These graduate as separate contract revisions once the relevant wayfinder
 tickets resolve:
 
-- **Control socket** — path and protocol for CLI↔daemon IPC
-  (Unix socket at `~/.local/state/mlxd/mlxd.sock` is the expected
-  default; graduates after supervisor-topology decision, ticket #4).
 - **Server port allocation** — how `mlxctl` assigns ports to individual
   MLX servers (static config vs. dynamic allocation).
 - **Log level** — `MLXD_LOG_LEVEL` env var.
