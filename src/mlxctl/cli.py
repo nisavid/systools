@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 
+from . import dashboard
 from .control import (
     ControlClient,
     ControlDomainError,
@@ -23,6 +25,7 @@ from .paths import resolve_paths
 
 _LAUNCHD_LABEL = "io.nisavid.mlxd"
 _ACTIVATION_WAIT_SECONDS = 5.0
+_DASHBOARD_CONTROL_TIMEOUT_SECONDS = 1.0
 
 
 def main(
@@ -36,7 +39,6 @@ def main(
 ) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    request = _request(args)
     socket_path = resolve_paths().state_dir / "mlxd.sock"
     if activator is None:
         effective_platform = sys.platform if platform is None else platform
@@ -50,6 +52,29 @@ def main(
             )
 
         activator = activate
+    if args.command == "dashboard":
+        client = ControlClient(
+            socket_path, timeout_seconds=_DASHBOARD_CONTROL_TIMEOUT_SECONDS
+        )
+        try:
+            _send_with_activation(
+                client,
+                ControlRequest("status"),
+                activator,
+                wait_seconds=activation_wait_seconds,
+            )
+        except ControlDomainError as error:
+            print(f"mlxctl: {error.message}", file=sys.stderr)
+            return 1
+        except OSError as error:
+            print(
+                f"mlxctl: cannot reach mlxd: {error.strerror or error}",
+                file=sys.stderr,
+            )
+            return 1
+        return dashboard.run_dashboard(client, args.refresh_interval)
+
+    request = _request(args)
     try:
         result = _send_with_activation(
             ControlClient(socket_path),
@@ -128,6 +153,16 @@ def _parser() -> argparse.ArgumentParser:
     metrics.add_argument("--start", type=_timestamp)
     metrics.add_argument("--end", type=_timestamp)
     metrics.add_argument("--json", action="store_true")
+    dashboard_command = commands.add_parser(
+        "dashboard", help="monitor and control configured servers"
+    )
+    dashboard_command.add_argument(
+        "--refresh-interval",
+        type=_positive_seconds,
+        default=1.0,
+        metavar="SECONDS",
+        help="seconds between automatic refreshes (default: 1)",
+    )
     return parser
 
 
@@ -186,6 +221,16 @@ def _timestamp(value: str) -> datetime:
         return parse_timestamp(value)
     except ControlDomainError as error:
         raise argparse.ArgumentTypeError(error.message) from error
+
+
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive finite number") from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return seconds
 
 
 def _plain(value: object) -> object:
