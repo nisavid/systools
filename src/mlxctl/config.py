@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from ipaddress import ip_address
@@ -10,6 +11,9 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .server_options import OPTION_TYPES_BY_SERVER_TYPE
+
+
+_ALIAS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 class ConfigError(ValueError):
@@ -103,6 +107,7 @@ def load_config(path: str | Path) -> Config:
     models_raw = _table(raw.get("models", {}), "models")
     models = {}
     for model_id, raw_definition in models_raw.items():
+        validate_alias(model_id, "model")
         definition = _table(raw_definition, f"model '{model_id}'")
         _reject_unknown(f"model '{model_id}'", definition, {"reference"})
         reference = definition.get("reference")
@@ -114,6 +119,7 @@ def load_config(path: str | Path) -> Config:
     servers = {}
     listen_addresses: dict[tuple[str, int], str] = {}
     for server_id, raw_definition in servers_raw.items():
+        validate_alias(server_id, "server")
         definition = _table(raw_definition, f"server '{server_id}'")
         _reject_unknown(
             f"server '{server_id}'",
@@ -194,6 +200,14 @@ def _table(value: object, scope: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ConfigError(f"{scope} must be a table")
     return value
+
+
+def validate_alias(alias: str, noun: str = "alias") -> None:
+    """Reject aliases that are unsafe for filesystem-backed runtime identity."""
+    if not isinstance(alias, str) or _ALIAS_PATTERN.fullmatch(alias) is None:
+        raise ConfigError(
+            f"{noun} alias '{alias}' must match [A-Za-z0-9][A-Za-z0-9._-]*"
+        )
 
 
 def _loopback_host(server_id: str, host: object) -> str:

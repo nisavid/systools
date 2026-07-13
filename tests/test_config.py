@@ -242,6 +242,34 @@ port = 8080
 """
             )
 
+    def test_rejects_model_and_server_aliases_that_are_unsafe_for_paths(self) -> None:
+        cases = {
+            "model alias '../tiny' must match": """
+schema_version = 1
+[models."../tiny"]
+reference = "repo/tiny"
+""",
+            "server alias '/chat' must match": """
+schema_version = 1
+[models.tiny]
+reference = "repo/tiny"
+[servers."/chat"]
+type = "mlx_lm"
+model = "tiny"
+port = 8080
+""",
+            "model alias '.hidden' must match": """
+schema_version = 1
+[models.".hidden"]
+reference = "repo/tiny"
+""",
+        }
+
+        for message, source in cases.items():
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ConfigError, message):
+                    self._load(source)
+
     def _load(self, source: str):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
