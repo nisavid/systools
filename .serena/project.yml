@@ -33,6 +33,7 @@ project_name: "systools"
 # Note that when using the JetBrains backend, language servers are not used and this list is correspondingly ignored.
 languages:
 - python
+- bash
 
 # the encoding used by text files in the project
 # For a list of possible encodings, see https://docs.python.org/3.11/library/codecs.html#standard-encodings
@@ -132,10 +133,11 @@ added_modes:
 # initial prompt for the project. It will always be given to the LLM upon activating the project
 # (contrary to the memories, which are loaded on demand).
 initial_prompt: >-
-  Treat the Git repository root as the project boundary. Follow CONTEXT.md for
-  MLX service-manager domain language when working in mlxctl. Treat future
-  nested Git repositories and submodules as separate Serena projects; never
-  add sibling worktrees as workspace folders.
+  Treat the Git repository root as the Serena project boundary. Read
+  CONTEXT-MAP.md, route work by repository path, then consult the path-relevant
+  context and memory namespace before acting. Treat future nested Git
+  repositories and submodules as separate Serena projects; never add sibling
+  worktrees as workspace folders.
 
 # time budget (seconds) per tool call for the retrieval of additional symbol information
 # such as docstrings or parameter information.

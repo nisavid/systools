@@ -1,4 +1,4 @@
-# Suggested commands
+# mlxctl commands
 
 Run from the repository root.
 
@@ -8,9 +8,6 @@ Run from the repository root.
 - `uvx ruff check .` — lint all Python files.
 - `uvx ruff format --check .` — verify formatting.
 - `uv build` — build the source distribution and wheel.
-- `serena project health-check .` — validate Serena configuration, language servers, and symbolic tools.
-- `serena project index .` — refresh the ignored local symbol cache.
-- `serena memories check` — validate memory references.
 
 ## Local package use
 
