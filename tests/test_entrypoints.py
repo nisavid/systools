@@ -1,12 +1,14 @@
 import subprocess
-import sys
+import shutil
 import unittest
 
 
 class EntrypointTests(unittest.TestCase):
-    def test_cli_module_has_help(self) -> None:
+    def test_installed_cli_script_has_help(self) -> None:
+        executable = shutil.which("mlxctl")
+        self.assertIsNotNone(executable)
         result = subprocess.run(
-            [sys.executable, "-m", "mlxctl.cli", "--help"],
+            [executable, "--help"],
             check=False,
             capture_output=True,
             text=True,
@@ -16,9 +18,11 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: mlxctl", result.stdout)
 
-    def test_daemon_module_has_help(self) -> None:
+    def test_installed_daemon_script_has_help(self) -> None:
+        executable = shutil.which("mlxd")
+        self.assertIsNotNone(executable)
         result = subprocess.run(
-            [sys.executable, "-m", "mlxctl.daemon", "--help"],
+            [executable, "--help"],
             check=False,
             capture_output=True,
             text=True,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 import socket
 import threading
 import time
@@ -26,6 +27,7 @@ _HOP_BY_HOP = {
     "upgrade",
 }
 _MAX_PARSE_BYTES = 1024 * 1024
+_LOGGER = logging.getLogger(__name__)
 
 
 class _MetricRecorder(Protocol):
@@ -36,6 +38,8 @@ class MetricsProxy:
     """Forward endpoints; the v1 request-body limit is 32 MiB."""
 
     MAX_REQUEST_BODY_BYTES = 32 * 1024 * 1024
+    DOWNSTREAM_IO_TIMEOUT_SECONDS = 30
+    UPSTREAM_IO_TIMEOUT_SECONDS = 30
     HTTP_CONNECTION_CLASS = http.client.HTTPConnection
 
     def __init__(
@@ -201,6 +205,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
     def setup(self) -> None:
         super().setup()
+        self.connection.settimeout(self.proxy.DOWNSTREAM_IO_TIMEOUT_SECONDS)
         if not self.proxy._register_downstream(self.connection):
             try:
                 self.connection.shutdown(socket.SHUT_RDWR)
@@ -243,7 +248,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self._forward()
 
-    def log_message(self, format: str, *args: object) -> None:
+    def log_message(self, format_string: str, *args: object) -> None:
         pass
 
     def _forward(self) -> None:
@@ -280,7 +285,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             connection = self.proxy.HTTP_CONNECTION_CLASS(
                 self.proxy.upstream_endpoint.host,
                 self.proxy.upstream_endpoint.port,
-                timeout=30,
+                timeout=self.proxy.UPSTREAM_IO_TIMEOUT_SECONDS,
             )
             if not self.proxy._register_upstream(connection):
                 outcome = RequestOutcome.CLIENT_DISCONNECT
@@ -409,22 +414,25 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 connection.close()
                 self.proxy._unregister_upstream(connection)
             if self.command == "POST":
-                self.proxy._engine.record(
-                    RequestMetricEvent(
-                        server_id=self.proxy._server_id,
-                        model_alias=self.proxy._model_alias,
-                        run_id=self.proxy._run_id,
-                        started_at=started_at,
-                        duration_ms=(time.monotonic() - started) * 1000,
-                        ttft_ms=ttft_ms,
-                        status_code=status_code,
-                        outcome=outcome,
-                        prompt_tokens=usage[0],
-                        completion_tokens=usage[1],
-                        total_tokens=usage[2],
-                        cached_tokens=usage[3],
+                try:
+                    self.proxy._engine.record(
+                        RequestMetricEvent(
+                            server_id=self.proxy._server_id,
+                            model_alias=self.proxy._model_alias,
+                            run_id=self.proxy._run_id,
+                            started_at=started_at,
+                            duration_ms=(time.monotonic() - started) * 1000,
+                            ttft_ms=ttft_ms,
+                            status_code=status_code,
+                            outcome=outcome,
+                            prompt_tokens=usage[0],
+                            completion_tokens=usage[1],
+                            total_tokens=usage[2],
+                            cached_tokens=usage[3],
+                        )
                     )
-                )
+                except Exception:
+                    _LOGGER.exception("failed to record request metrics")
 
     def _request_body(self) -> bytes | bytearray:
         lengths = self.headers.get_all("Content-Length", [])

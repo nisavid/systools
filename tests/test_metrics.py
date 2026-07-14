@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -136,6 +137,23 @@ class MetricsEngineTests(unittest.TestCase):
                     future.result()
 
             self.assertEqual(engine.query(MetricQuery())[0].request_count, 40)
+
+    def test_two_engines_can_initialize_one_new_database_concurrently(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "metrics.sqlite3"
+            ready = threading.Barrier(2)
+
+            def construct() -> MetricsEngine:
+                ready.wait()
+                return MetricsEngine(path)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                engines = tuple(pool.map(lambda _index: construct(), range(2)))
+
+            self.assertEqual(len(engines), 2)
+            for index, engine in enumerate(engines):
+                engine.record(replace(self._request(), run_id=f"run-{index}"))
+            self.assertEqual(engines[0].query(MetricQuery())[0].request_count, 2)
 
     def test_prune_deletes_only_rows_older_than_retention_cutoff(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

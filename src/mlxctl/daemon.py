@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import sys
@@ -151,8 +152,8 @@ def _nonnegative_float(value: str) -> float:
         parsed = float(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("must be a number") from error
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("must be nonnegative")
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be finite and nonnegative")
     return parsed
 
 
