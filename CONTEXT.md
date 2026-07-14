@@ -8,6 +8,10 @@ This context describes named local inference servers and the stable identities a
 A named declaration of one managed local inference server, including its server type, model alias, and client endpoint.
 _Avoid_: Instance, process
 
+**Server Run**:
+One activation of a Server Definition, identified by a run ID for metrics and lifecycle correlation.
+_Avoid_: Instance, process
+
 **Server Type**:
 The inference server family named by a Server Definition, currently `mlx_lm` or `optiq`.
 _Avoid_: Backend, provider

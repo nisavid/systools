@@ -60,14 +60,14 @@ socket, database, and lifecycle state files are mode `0600`.
 
 `mlxctl` connects to `mlxd.sock` using newline-delimited JSON over a Unix
 socket. Each connection carries one versioned request and one response.
-The protocol supports server start, stop, status, advertised-model, and
-metric-summary commands. `mlxd` rejects malformed, unsupported, unknown,
+The protocol supports `start`, `stop`, `status`, `models`, and `metrics`
+commands. `mlxd` rejects malformed, unsupported, unknown,
 and oversized requests without exposing machine-local paths or tracebacks.
 
 ### Log directory (`~/Library/Logs/mlxd/`)
 
-`mlxd.log` (supervisor stdout/stderr), per-server logs
-(`mlx_lm-<model>.log`, `optiq-<model>.log`).
+`mlxd.log` (supervisor stdout/stderr) and one `<server-name>.log` file for each
+Server Definition.
 
 ## Environment Variables
 

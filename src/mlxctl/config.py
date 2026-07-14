@@ -34,13 +34,13 @@ class MetricsSettings:
 
 @dataclass(frozen=True)
 class ModelDefinition:
-    id: str
+    alias: str
     reference: str
 
 
 @dataclass(frozen=True)
 class ServerDefinition:
-    id: str
+    name: str
     type: str
     model: str
     host: str
@@ -106,14 +106,14 @@ def load_config(path: str | Path) -> Config:
 
     models_raw = _table(raw.get("models", {}), "models")
     models = {}
-    for model_id, raw_definition in models_raw.items():
-        validate_alias(model_id, "model")
-        definition = _table(raw_definition, f"model '{model_id}'")
-        _reject_unknown(f"model '{model_id}'", definition, {"reference"})
+    for model_alias, raw_definition in models_raw.items():
+        validate_alias(model_alias, "model")
+        definition = _table(raw_definition, f"model '{model_alias}'")
+        _reject_unknown(f"model '{model_alias}'", definition, {"reference"})
         reference = definition.get("reference")
         if not isinstance(reference, str) or not reference:
-            raise ConfigError(f"model '{model_id}' requires string 'reference'")
-        models[model_id] = ModelDefinition(id=model_id, reference=reference)
+            raise ConfigError(f"model '{model_alias}' requires string 'reference'")
+        models[model_alias] = ModelDefinition(alias=model_alias, reference=reference)
 
     servers_raw = _table(raw.get("servers", {}), "servers")
     servers = {}
@@ -174,7 +174,7 @@ def load_config(path: str | Path) -> Config:
         )
         _validate_options(server_id, options, option_types)
         servers[server_id] = ServerDefinition(
-            id=server_id,
+            name=server_id,
             type=server_type,
             model=model_alias,
             host=host,

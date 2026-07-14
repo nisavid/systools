@@ -242,7 +242,10 @@ def _plain(value: object) -> object:
 
 
 def _print_human(command: str, value: object) -> None:
-    assert isinstance(value, dict)
+    if not isinstance(value, dict):
+        raise TypeError(
+            f"expected an object response for {command!r}, got {type(value).__name__}"
+        )
     if command in {"start", "stop"}:
         print(_status_line(value))
         return

@@ -28,12 +28,26 @@ def resolve_paths(
     values = os.environ if environ is None else environ
     home_dir = Path.home() if home is None else home
     return RuntimePaths(
-        config_dir=_directory(values, "MLXD_CONFIG_DIR", home_dir / ".config/mlxd"),
-        state_dir=_directory(values, "MLXD_STATE_DIR", home_dir / ".local/state/mlxd"),
-        log_dir=_directory(values, "MLXD_LOG_DIR", home_dir / "Library/Logs/mlxd"),
+        config_dir=_directory(
+            values, "MLXD_CONFIG_DIR", home_dir / ".config/mlxd", home_dir
+        ),
+        state_dir=_directory(
+            values, "MLXD_STATE_DIR", home_dir / ".local/state/mlxd", home_dir
+        ),
+        log_dir=_directory(
+            values, "MLXD_LOG_DIR", home_dir / "Library/Logs/mlxd", home_dir
+        ),
     )
 
 
-def _directory(values: Mapping[str, str], key: str, default: Path) -> Path:
+def _directory(
+    values: Mapping[str, str], key: str, default: Path, home_dir: Path
+) -> Path:
     value = values.get(key)
-    return Path(value).expanduser() if value else default
+    if not value:
+        return default
+    if value == "~":
+        return home_dir
+    if value.startswith("~/"):
+        return home_dir / value[2:]
+    return Path(value).expanduser()

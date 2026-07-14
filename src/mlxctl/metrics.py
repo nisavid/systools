@@ -21,7 +21,7 @@ class RequestOutcome(StrEnum):
 class RequestMetricEvent:
     server_id: str
     model_alias: str
-    instance_id: str
+    run_id: str
     started_at: datetime
     duration_ms: float
     ttft_ms: float | None
@@ -34,14 +34,14 @@ class RequestMetricEvent:
 
     def __post_init__(self) -> None:
         if not isinstance(self.outcome, RequestOutcome):
-            raise ValueError("outcome must be a RequestOutcome")
+            raise TypeError("outcome must be a RequestOutcome")
 
 
 @dataclass(frozen=True, slots=True)
 class ProcessSample:
     server_id: str
     model_alias: str
-    instance_id: str
+    run_id: str
     sampled_at: datetime
     rss_bytes: int
     cpu_percent: float
@@ -95,7 +95,7 @@ class MetricsEngine:
                         id INTEGER PRIMARY KEY,
                         server_id TEXT NOT NULL,
                         model_alias TEXT NOT NULL,
-                        instance_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
                         started_at REAL NOT NULL,
                         duration_ms REAL NOT NULL,
                         ttft_ms REAL,
@@ -114,7 +114,7 @@ class MetricsEngine:
                         id INTEGER PRIMARY KEY,
                         server_id TEXT NOT NULL,
                         model_alias TEXT NOT NULL,
-                        instance_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
                         sampled_at REAL NOT NULL,
                         rss_bytes INTEGER NOT NULL,
                         cpu_percent REAL NOT NULL
@@ -132,7 +132,7 @@ class MetricsEngine:
                 connection.execute(
                     """
                     INSERT INTO request_metrics (
-                        server_id, model_alias, instance_id, started_at,
+                        server_id, model_alias, run_id, started_at,
                         duration_ms, ttft_ms, status_code, outcome,
                         prompt_tokens, completion_tokens, total_tokens, cached_tokens
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -140,7 +140,7 @@ class MetricsEngine:
                     (
                         event.server_id,
                         event.model_alias,
-                        event.instance_id,
+                        event.run_id,
                         _timestamp(event.started_at),
                         event.duration_ms,
                         event.ttft_ms,
@@ -156,14 +156,14 @@ class MetricsEngine:
                 connection.execute(
                     """
                     INSERT INTO process_samples (
-                        server_id, model_alias, instance_id, sampled_at,
+                        server_id, model_alias, run_id, sampled_at,
                         rss_bytes, cpu_percent
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.server_id,
                         event.model_alias,
-                        event.instance_id,
+                        event.run_id,
                         _timestamp(event.sampled_at),
                         event.rss_bytes,
                         event.cpu_percent,

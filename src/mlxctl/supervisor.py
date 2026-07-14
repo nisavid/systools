@@ -46,11 +46,11 @@ class LifecycleState(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ManagedServerStatus:
     server_id: str
-    model_id: str | None
+    model_alias: str | None
     lifecycle: LifecycleState
     client_endpoint: Endpoint | None = None
     upstream_endpoint: Endpoint | None = None
-    instance_id: str | None = None
+    run_id: str | None = None
     pid: int | None = None
     advertised_models: tuple[str, ...] = ()
     error: str | None = None
@@ -84,7 +84,7 @@ LifecycleResult: TypeAlias = (
 
 
 @dataclass(slots=True)
-class _ManagedInstance:
+class _ManagedServerRun:
     status: ManagedServerStatus
     start_done: threading.Event
     process: subprocess.Popen[bytes] | None = None
@@ -99,7 +99,7 @@ class _ManagedInstance:
 
 
 class Supervisor:
-    """Own every child instance through ``apply`` and bounded ``close``."""
+    """Own every child run through ``apply`` and bounded ``close``."""
 
     _PROBE_INTERVAL_SECONDS = 0.02
     _PROBE_TIMEOUT_SECONDS = 0.1
@@ -119,7 +119,7 @@ class Supervisor:
         self._log_dir = Path(log_dir)
         self._registry = adapter_registry or AdapterRegistry()
         self._lock = threading.RLock()
-        self._instances: dict[str, _ManagedInstance] = {}
+        self._runs: dict[str, _ManagedServerRun] = {}
         self._closed = False
         self._close_complete = threading.Event()
         self._close_error: BaseException | None = None
@@ -148,7 +148,7 @@ class Supervisor:
             else:
                 self._closed = True
                 owns_close = True
-                server_ids = tuple(self._instances)
+                server_ids = tuple(self._runs)
         if not owns_close:
             self._close_complete.wait()
             if self._close_error is not None:
@@ -168,17 +168,17 @@ class Supervisor:
     def _start(self, command: StartServer) -> ManagedServerStatus:
         server = command.server
         model = command.model
-        validate_alias(server.id, "server")
-        validate_alias(model.id, "model")
-        if server.model != model.id:
+        validate_alias(server.name, "server")
+        validate_alias(model.alias, "model")
+        if server.model != model.alias:
             raise ValueError(
-                f"server '{server.id}' expects model alias '{server.model}', not '{model.id}'"
+                f"server '{server.name}' expects model alias '{server.model}', not '{model.alias}'"
             )
         wait_for: threading.Event | None = None
         with self._lock:
             if self._closed:
                 raise RuntimeError("supervisor is closed")
-            current = self._instances.get(server.id)
+            current = self._runs.get(server.name)
             if current is not None and current.status.lifecycle in {
                 LifecycleState.READY,
                 LifecycleState.UNHEALTHY,
@@ -191,16 +191,16 @@ class Supervisor:
                 wait_for = current.start_done
             else:
                 client = Endpoint(server.host, server.port)
-                instance_id = uuid.uuid4().hex
+                run_id = uuid.uuid4().hex
                 status = ManagedServerStatus(
-                    server.id,
-                    model.id,
+                    server.name,
+                    model.alias,
                     LifecycleState.STARTING,
                     client_endpoint=client,
-                    instance_id=instance_id,
+                    run_id=run_id,
                 )
-                current = _ManagedInstance(status, threading.Event())
-                self._instances[server.id] = current
+                current = _ManagedServerRun(status, threading.Event())
+                self._runs[server.name] = current
         if wait_for is not None:
             wait_for.wait(
                 self._settings.readiness_timeout_seconds
@@ -208,32 +208,32 @@ class Supervisor:
                 + 1
             )
             with self._lock:
-                return self._instances[server.id].status
+                return self._runs[server.name].status
         assert current is not None
         return self._launch(current, server, model)
 
     def _launch(
         self,
-        instance: _ManagedInstance,
+        run: _ManagedServerRun,
         server: ServerDefinition,
         model: ModelDefinition,
     ) -> ManagedServerStatus:
-        with instance.operation_lock:
+        with run.operation_lock:
             try:
                 upstream = self._allocate_upstream()
                 proxy = MetricsProxy(
-                    instance.status.client_endpoint,
+                    run.status.client_endpoint,
                     upstream,
                     self._metrics,
-                    server.id,
-                    model.id,
-                    instance.status.instance_id,
+                    server.name,
+                    model.alias,
+                    run.status.run_id,
                 )
                 proxy.__enter__()
-                instance.proxy = proxy
+                run.proxy = proxy
                 prepared = self._registry.prepare(server, model, upstream)
-                log_stream = self._open_log(server.id)
-                instance.log_stream = log_stream
+                log_stream = self._open_log(server.name)
+                run.log_stream = log_stream
                 environment = os.environ.copy()
                 environment.update(prepared.environment)
                 process = subprocess.Popen(
@@ -244,18 +244,18 @@ class Supervisor:
                     stdout=log_stream,
                     stderr=subprocess.STDOUT,
                 )
-                instance.process = process
+                run.process = process
                 (
-                    instance.process_identity,
-                    instance.process_create_time,
+                    run.process_identity,
+                    run.process_create_time,
                 ) = _capture_process_identity(process.pid)
                 with self._lock:
-                    instance.status = replace(
-                        instance.status, upstream_endpoint=upstream, pid=process.pid
+                    run.status = replace(
+                        run.status, upstream_endpoint=upstream, pid=process.pid
                     )
                     self._persist_locked()
             except Exception as error:
-                return self._fail(instance, f"start failed: {error}", terminate=True)
+                return self._fail(run, f"start failed: {error}", terminate=True)
 
         deadline = time.monotonic() + self._settings.readiness_timeout_seconds
         upstream_url = f"http://{upstream.host}:{upstream.port}"
@@ -263,19 +263,19 @@ class Supervisor:
             return_code = process.poll()
             if return_code is not None:
                 return self._fail(
-                    instance,
+                    run,
                     f"process exited with status {return_code}",
                     terminate=False,
                 )
             with self._lock:
-                if instance.stop_requested:
+                if run.stop_requested:
                     stopping = True
                 else:
                     stopping = False
             if stopping:
-                instance.start_done.wait(self._settings.stop_timeout_seconds * 2 + 1)
+                run.start_done.wait(self._settings.stop_timeout_seconds * 2 + 1)
                 with self._lock:
-                    return instance.status
+                    return run.status
             live = False
             try:
                 live = probe_liveness(
@@ -291,131 +291,129 @@ class Supervisor:
                 advertised = None
             if live and advertised is not None:
                 with self._lock:
-                    if not instance.stop_requested:
-                        instance.status = replace(
-                            instance.status,
+                    if not run.stop_requested:
+                        run.status = replace(
+                            run.status,
                             lifecycle=LifecycleState.READY,
                             advertised_models=advertised,
                             error=None,
                         )
-                        instance.start_done.set()
-                        self._start_monitor(instance, server.id, model.id, upstream_url)
-                    return instance.status
+                        run.start_done.set()
+                        self._start_monitor(run, server.name, model.alias, upstream_url)
+                    return run.status
             time.sleep(self._PROBE_INTERVAL_SECONDS)
         return_code = process.poll()
         if return_code is not None:
             return self._fail(
-                instance,
+                run,
                 f"process exited with status {return_code}",
                 terminate=False,
             )
-        return self._fail(instance, "readiness timed out", terminate=True)
+        return self._fail(run, "readiness timed out", terminate=True)
 
     def _stop(self, server_id: str) -> ManagedServerStatus:
         validate_alias(server_id, "server")
         with self._lock:
-            instance = self._instances.get(server_id)
-            if instance is None:
+            run = self._runs.get(server_id)
+            if run is None:
                 status = ManagedServerStatus(server_id, None, LifecycleState.STOPPED)
-                self._instances[server_id] = _ManagedInstance(status, threading.Event())
-                self._instances[server_id].start_done.set()
+                self._runs[server_id] = _ManagedServerRun(status, threading.Event())
+                self._runs[server_id].start_done.set()
                 return status
-            if instance.status.lifecycle is LifecycleState.STOPPED:
-                return instance.status
-            instance.stop_requested = True
-            instance.status = replace(
-                instance.status, lifecycle=LifecycleState.STOPPING, error=None
+            if run.status.lifecycle is LifecycleState.STOPPED:
+                return run.status
+            run.stop_requested = True
+            run.status = replace(
+                run.status, lifecycle=LifecycleState.STOPPING, error=None
             )
-            if instance.monitor_stop is not None:
-                instance.monitor_stop.set()
-        with instance.operation_lock:
-            self._close_proxy(instance)
-            self._terminate_child(instance)
-            self._close_log(instance)
-        self._join_monitor(instance)
+            if run.monitor_stop is not None:
+                run.monitor_stop.set()
+        with run.operation_lock:
+            self._close_proxy(run)
+            self._terminate_child(run)
+            self._close_log(run)
+        self._join_monitor(run)
         with self._lock:
-            instance.status = replace(
-                instance.status,
+            run.status = replace(
+                run.status,
                 lifecycle=LifecycleState.STOPPED,
                 upstream_endpoint=None,
-                instance_id=None,
+                run_id=None,
                 pid=None,
                 advertised_models=(),
                 error=None,
             )
-            instance.start_done.set()
+            run.start_done.set()
             self._persist_locked()
-            return instance.status
+            return run.status
 
     def _status(
         self, server_id: str | None
     ) -> ManagedServerStatus | tuple[ManagedServerStatus, ...]:
         with self._lock:
             if server_id is None:
-                return tuple(
-                    self._instances[key].status for key in sorted(self._instances)
-                )
+                return tuple(self._runs[key].status for key in sorted(self._runs))
             validate_alias(server_id, "server")
-            instance = self._instances.get(server_id)
-            if instance is None:
+            run = self._runs.get(server_id)
+            if run is None:
                 return ManagedServerStatus(server_id, None, LifecycleState.STOPPED)
-            return instance.status
+            return run.status
 
     def _start_monitor(
         self,
-        instance: _ManagedInstance,
+        run: _ManagedServerRun,
         server_id: str,
-        model_id: str,
+        model_alias: str,
         upstream_url: str,
     ) -> None:
         stop = threading.Event()
-        instance.monitor_stop = stop
+        run.monitor_stop = stop
         monitor = threading.Thread(
             target=self._monitor,
-            args=(instance, server_id, model_id, upstream_url, stop),
+            args=(run, server_id, model_alias, upstream_url, stop),
             name=f"mlxctl-monitor-{server_id}",
             daemon=True,
         )
-        instance.monitor = monitor
+        run.monitor = monitor
         monitor.start()
 
     def _monitor(
         self,
-        instance: _ManagedInstance,
+        run: _ManagedServerRun,
         server_id: str,
-        model_id: str,
+        model_alias: str,
         upstream_url: str,
         stop: threading.Event,
     ) -> None:
         interval = self._settings.metrics_interval_seconds
         while not stop.wait(interval):
-            process = instance.process
+            process = run.process
             if process is None:
                 return
             return_code = process.poll()
             if return_code is not None:
                 with self._lock:
-                    stopping = instance.stop_requested
+                    stopping = run.stop_requested
                 if not stopping:
                     self._fail(
-                        instance,
+                        run,
                         f"process exited with status {return_code}",
                         terminate=False,
                     )
                 return
             try:
-                if instance.process_identity is not None and not _identity_matches(
-                    instance.process_identity, instance.process_create_time
+                if run.process_identity is not None and not _identity_matches(
+                    run.process_identity, run.process_create_time
                 ):
-                    self._fail(instance, "process identity changed", terminate=False)
+                    self._fail(run, "process identity changed", terminate=False)
                     return
-                if instance.process_identity is not None:
-                    rss_bytes, cpu_percent = _process_sample(instance.process_identity)
+                if run.process_identity is not None:
+                    rss_bytes, cpu_percent = _process_sample(run.process_identity)
                     self._metrics.record(
                         ProcessSample(
                             server_id,
-                            model_id,
-                            instance.status.instance_id,
+                            model_alias,
+                            run.status.run_id,
                             datetime.now(UTC),
                             rss_bytes,
                             cpu_percent,
@@ -442,60 +440,60 @@ class Supervisor:
             if live and advertised is not None:
                 lifecycle = LifecycleState.READY
             with self._lock:
-                if not instance.stop_requested and instance.status.lifecycle in {
+                if not run.stop_requested and run.status.lifecycle in {
                     LifecycleState.READY,
                     LifecycleState.UNHEALTHY,
                 }:
-                    instance.status = replace(
-                        instance.status,
+                    run.status = replace(
+                        run.status,
                         lifecycle=lifecycle,
                         advertised_models=(
                             advertised
                             if advertised is not None
-                            else instance.status.advertised_models
+                            else run.status.advertised_models
                         ),
                     )
 
     def _fail(
-        self, instance: _ManagedInstance, message: str, *, terminate: bool
+        self, run: _ManagedServerRun, message: str, *, terminate: bool
     ) -> ManagedServerStatus:
-        with instance.operation_lock:
-            if instance.monitor_stop is not None:
-                instance.monitor_stop.set()
-            self._close_proxy(instance)
+        with run.operation_lock:
+            if run.monitor_stop is not None:
+                run.monitor_stop.set()
+            self._close_proxy(run)
             if terminate:
-                self._terminate_child(instance)
-            self._close_log(instance)
+                self._terminate_child(run)
+            self._close_log(run)
         with self._lock:
-            if instance.stop_requested:
-                return instance.status
-            instance.status = replace(
-                instance.status,
+            if run.stop_requested:
+                return run.status
+            run.status = replace(
+                run.status,
                 lifecycle=LifecycleState.FAILED,
                 upstream_endpoint=None,
                 pid=None,
                 advertised_models=(),
                 error=message,
             )
-            instance.start_done.set()
+            run.start_done.set()
             self._persist_locked()
-            return instance.status
+            return run.status
 
-    def _terminate_child(self, instance: _ManagedInstance) -> None:
-        process = instance.process
+    def _terminate_child(self, run: _ManagedServerRun) -> None:
+        process = run.process
         if process is None or process.poll() is not None:
             return
-        if not self._child_identity_matches(instance):
+        if not self._child_identity_matches(run):
             process.poll()
             return
         process.terminate()
-        if not self._child_identity_matches(instance):
+        if not self._child_identity_matches(run):
             process.poll()
             return
         try:
             process.wait(timeout=self._settings.stop_timeout_seconds)
         except subprocess.TimeoutExpired:
-            if not self._child_identity_matches(instance):
+            if not self._child_identity_matches(run):
                 process.poll()
                 return
             process.kill()
@@ -505,15 +503,13 @@ class Supervisor:
                 pass
 
     @staticmethod
-    def _child_identity_matches(instance: _ManagedInstance) -> bool:
-        if instance.process_identity is None:
+    def _child_identity_matches(run: _ManagedServerRun) -> bool:
+        if run.process_identity is None:
             return True
-        return _identity_matches(
-            instance.process_identity, instance.process_create_time
-        )
+        return _identity_matches(run.process_identity, run.process_create_time)
 
-    def _join_monitor(self, instance: _ManagedInstance) -> None:
-        monitor = instance.monitor
+    def _join_monitor(self, run: _ManagedServerRun) -> None:
+        monitor = run.monitor
         if monitor is None or monitor is threading.current_thread():
             return
         monitor.join(
@@ -521,16 +517,16 @@ class Supervisor:
         )
 
     @staticmethod
-    def _close_proxy(instance: _ManagedInstance) -> None:
-        proxy = instance.proxy
-        instance.proxy = None
+    def _close_proxy(run: _ManagedServerRun) -> None:
+        proxy = run.proxy
+        run.proxy = None
         if proxy is not None:
             proxy.__exit__()
 
     @staticmethod
-    def _close_log(instance: _ManagedInstance) -> None:
-        stream = instance.log_stream
-        instance.log_stream = None
+    def _close_log(run: _ManagedServerRun) -> None:
+        stream = run.log_stream
+        run.log_stream = None
         if stream is not None:
             stream.close()
 
@@ -586,18 +582,18 @@ class Supervisor:
 
     def _persist_locked(self) -> None:
         active = {}
-        for server_id, instance in self._instances.items():
+        for server_id, run in self._runs.items():
             if (
-                instance.process is not None
-                and instance.process.poll() is None
-                and instance.status.pid is not None
-                and instance.process_create_time is not None
-                and instance.status.lifecycle
+                run.process is not None
+                and run.process.poll() is None
+                and run.status.pid is not None
+                and run.process_create_time is not None
+                and run.status.lifecycle
                 not in {LifecycleState.STOPPED, LifecycleState.FAILED}
             ):
                 active[server_id] = {
-                    "pid": instance.status.pid,
-                    "create_time": instance.process_create_time,
+                    "pid": run.status.pid,
+                    "create_time": run.process_create_time,
                 }
         self._write_state(active)
 

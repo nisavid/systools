@@ -10,6 +10,7 @@ class EntrypointTests(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
+            timeout=5,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -21,6 +22,7 @@ class EntrypointTests(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
+            timeout=5,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
