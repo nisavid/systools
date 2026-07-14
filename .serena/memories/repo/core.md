@@ -5,8 +5,9 @@ the shared Serena project boundary.
 
 ## Source map
 
-- `src/`, `tests/`, and `docs/` contain subproject-owned implementation,
-  verification, and documentation.
+- `tools/<tool>/` is the root of each subproject and contains its
+  implementation, verification, packaging, context, and product documentation.
+- Root `docs/` contains repository-wide policy and architecture records.
 - `CONTEXT-MAP.md` routes paths and behavior to the applicable product context.
 - `.github/` and `.hooks/` contain repository-wide commit-policy automation.
 - `.serena/memories/repo/` contains repository-wide guidance.
@@ -22,6 +23,8 @@ the shared Serena project boundary.
   product vocabulary.
 - Treat a future nested Git repository or submodule as a separate Serena
   project.
+- Keep ordinary subprojects beneath `tools/<tool>/`; do not create a shared
+  root language project for independently shipped tools.
 - Add a new subproject memory namespace only after its decisions are settled.
 
 See `mem:repo/conventions`, `mem:repo/suggested_commands`, and

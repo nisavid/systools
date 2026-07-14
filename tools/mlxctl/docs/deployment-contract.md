@@ -12,8 +12,8 @@ install hook.
 | `mlxctl` | CLI/TUI — status, start, stop, models, metrics, dashboard | `pyproject.toml` `console_scripts` |
 | `mlxd`   | Supervisor daemon — launchd-managed process that manages MLX server lifecycle | `pyproject.toml` `console_scripts` |
 
-Both are installed via `uv tool install` or `pip install` as console
-script entry points. The plist's `ProgramArguments` invokes `mlxd`.
+Both are installed from `tools/mlxctl/` via `uv tool install` or `pip install`
+as console script entry points. The plist's `ProgramArguments` invokes `mlxd`.
 
 ## Plist Label
 

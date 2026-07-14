@@ -4,12 +4,12 @@
 
 ## Source map
 
-- `src/mlxctl/` contains the package, CLI, daemon, control protocol,
+- `tools/mlxctl/src/mlxctl/` contains the package, CLI, daemon, control protocol,
   supervisor, metrics proxy, adapters, and terminal dashboard.
-- `tests/` contains behavior and transport contract tests.
-- `src/mlxctl/CONTEXT.md` is the domain glossary; use its terms in code and
+- `tools/mlxctl/tests/` contains behavior and transport contract tests.
+- `tools/mlxctl/CONTEXT.md` is the domain glossary; use its terms in code and
   user-facing copy.
-- `docs/deployment-contract.md` is the versioned boundary with the personal
+- `tools/mlxctl/docs/deployment-contract.md` is the versioned boundary with the personal
   dotfiles deployment layer.
 
 ## Invariants

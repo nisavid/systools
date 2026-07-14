@@ -1,6 +1,6 @@
 # mlxctl task completion
 
-A code change is ready when all applicable gates pass from the repository root:
+A code change is ready when all applicable gates pass from `tools/mlxctl/`:
 
 1. `uv run python -m unittest discover -s tests`
 2. `uvx ruff check .`
