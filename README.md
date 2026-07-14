@@ -23,10 +23,11 @@ they become usable.
   README into its `docs/` directory.
 - **Browse the implementation:** start in the tool's `src/` directory and use
   its tests as executable examples of behavior.
-- **Contribute:** work from the tool's subproject directory and run the
-  development commands in its README.
+- **Contribute:** for tool-specific changes, work from the tool's subproject
+  directory and run the development commands in its README. Make shared
+  repository documentation and policy changes from the repository root.
 
-The repository layout is intentionally shallow:
+A simplified view of the intentionally shallow layout:
 
 ```text
 .
