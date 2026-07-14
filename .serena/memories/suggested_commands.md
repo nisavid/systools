@@ -1,0 +1,22 @@
+# Suggested commands
+
+Run from the repository root.
+
+## Development and verification
+
+- `uv run python -m unittest discover -s tests` — run the full test suite with project dependencies.
+- `uvx ruff check .` — lint all Python files.
+- `uvx ruff format --check .` — verify formatting.
+- `uv build` — build the source distribution and wheel.
+- `serena project health-check .` — validate Serena configuration, language servers, and symbolic tools.
+- `serena project index .` — refresh the ignored local symbol cache.
+- `serena memories check` — validate memory references.
+
+## Local package use
+
+- `uv tool install --force .` — install or refresh `mlxctl` and `mlxd` from this checkout.
+- `mlxctl status` — inspect managed server state.
+- `mlxctl dashboard` — open the terminal dashboard.
+- `mlxctl start <server>` / `mlxctl stop <server>` — manage a named Server Definition.
+
+The dotfiles install hook owns the normal machine installation and LaunchAgent registration.
