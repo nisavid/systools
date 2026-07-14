@@ -274,6 +274,7 @@ class MetricsProxyTests(unittest.TestCase):
                     response.getheader("Access-Control-Allow-Origin"),
                     "https://client.example",
                 )
+                self.assertEqual(self.engine.query(MetricQuery()), ())
 
             with self.assertRaises(OSError):
                 socket.create_connection((client.host, client.port), timeout=0.2)
@@ -469,7 +470,7 @@ class MetricsProxyTests(unittest.TestCase):
             engine=engine or self.engine,
             server_id="chat",
             model_alias="tiny",
-            instance_id="instance-1",
+            run_id="run-1",
         )
 
     def _upstream(self):

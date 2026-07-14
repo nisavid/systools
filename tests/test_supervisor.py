@@ -424,7 +424,7 @@ class SupervisorTests(unittest.TestCase):
             occupied.listen()
             server, model = self._definitions()
             server = ServerDefinition(
-                server.id,
+                server.name,
                 server.type,
                 server.model,
                 server.host,
@@ -654,9 +654,7 @@ class SupervisorTests(unittest.TestCase):
     @staticmethod
     def _kill_and_reap(supervisor: Supervisor, pid: int) -> None:
         os.kill(pid, signal.SIGKILL)
-        supervisor._instances[
-            "chat"
-        ].process.wait()  # test cleanup after PID simulation
+        supervisor._runs["chat"].process.wait()  # test cleanup after PID simulation
 
 
 if __name__ == "__main__":

@@ -26,8 +26,23 @@ class ResolvePathsTests(unittest.TestCase):
         )
 
         self.assertEqual(paths.config_dir, Path("/runtime/config"))
+        self.assertEqual(paths.config_file, Path("/runtime/config/config.toml"))
         self.assertEqual(paths.state_dir, Path("/runtime/state"))
         self.assertEqual(paths.log_dir, Path("/runtime/logs"))
+
+    def test_tilde_overrides_use_the_injected_home_directory(self) -> None:
+        paths = resolve_paths(
+            environ={
+                "MLXD_CONFIG_DIR": "~/config",
+                "MLXD_STATE_DIR": "~/state",
+                "MLXD_LOG_DIR": "~/logs",
+            },
+            home=Path("/Users/tester"),
+        )
+
+        self.assertEqual(paths.config_dir, Path("/Users/tester/config"))
+        self.assertEqual(paths.state_dir, Path("/Users/tester/state"))
+        self.assertEqual(paths.log_dir, Path("/Users/tester/logs"))
 
 
 if __name__ == "__main__":

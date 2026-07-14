@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import TextIO
 from unittest import mock
 
 from mlxctl import cli
@@ -68,16 +69,14 @@ class DaemonCliProcessTests(unittest.TestCase):
             }
         )
         self.daemons: list[subprocess.Popen[str]] = []
+        self.daemon_logs: dict[int, TextIO] = {}
 
     def tearDown(self) -> None:
         for daemon in self.daemons:
             if daemon.poll() is None:
                 daemon.send_signal(signal.SIGTERM)
                 daemon.wait(3)
-            if daemon.stdout is not None:
-                daemon.stdout.close()
-            if daemon.stderr is not None:
-                daemon.stderr.close()
+            self.daemon_logs.pop(daemon.pid).close()
         self.temporary.cleanup()
 
     def test_actual_daemon_and_cli_start_status_models_stop_then_idle_exit(
@@ -118,7 +117,9 @@ class DaemonCliProcessTests(unittest.TestCase):
         self.assertIn("not configured", missing.stderr)
 
         time.sleep(0.5)
-        self.assertIsNone(daemon.poll(), daemon.stderr.read() if daemon.poll() else "")
+        self.assertIsNone(
+            daemon.poll(), self._daemon_output(daemon) if daemon.poll() else ""
+        )
         human_stop = self._cli("stop", "chat")
         self.assertEqual(human_stop.returncode, 0, human_stop.stderr)
         self.assertIn("chat is stopped", human_stop.stdout)
@@ -126,7 +127,7 @@ class DaemonCliProcessTests(unittest.TestCase):
         self.assertEqual(stopped.returncode, 0, stopped.stderr)
         self.assertEqual(json.loads(stopped.stdout)["lifecycle"], "stopped")
         daemon.wait(3)
-        self.assertEqual(daemon.returncode, 0, daemon.stderr.read())
+        self.assertEqual(daemon.returncode, 0, self._daemon_output(daemon))
         self.assertFalse((self.state_dir / "mlxd.sock").exists())
         self.assertEqual(stat.S_IMODE(self.state_dir.stat().st_mode), 0o700)
         self.assertEqual(
@@ -142,7 +143,7 @@ class DaemonCliProcessTests(unittest.TestCase):
                 daemon.send_signal(signal_number)
                 daemon.wait(3)
 
-                self.assertEqual(daemon.returncode, 0, daemon.stderr.read())
+                self.assertEqual(daemon.returncode, 0, self._daemon_output(daemon))
                 self.assertFalse(socket_path.exists())
 
     def test_control_activity_extends_idle_grace(self) -> None:
@@ -157,9 +158,16 @@ class DaemonCliProcessTests(unittest.TestCase):
             self.assertIsNone(daemon.poll())
 
         daemon.wait(3)
-        self.assertEqual(daemon.returncode, 0, daemon.stderr.read())
+        self.assertEqual(daemon.returncode, 0, self._daemon_output(daemon))
+
+    def test_human_output_rejects_a_non_object_protocol_response(self) -> None:
+        with self.assertRaisesRegex(
+            TypeError, "expected an object response for 'status', got list"
+        ):
+            cli._print_human("status", [])
 
     def _start_daemon(self, *, idle_grace: str) -> subprocess.Popen[str]:
+        log_stream = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         daemon = subprocess.Popen(
             [
                 sys.executable,
@@ -170,11 +178,18 @@ class DaemonCliProcessTests(unittest.TestCase):
             ],
             env=self.env,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=log_stream,
+            stderr=log_stream,
         )
         self.daemons.append(daemon)
+        self.daemon_logs[daemon.pid] = log_stream
         return daemon
+
+    def _daemon_output(self, daemon: subprocess.Popen[str]) -> str:
+        log_stream = self.daemon_logs[daemon.pid]
+        log_stream.flush()
+        log_stream.seek(0)
+        return log_stream.read()
 
     def _cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -194,7 +209,7 @@ class DaemonCliProcessTests(unittest.TestCase):
                 return path
             daemon = self.daemons[-1]
             if daemon.poll() is not None:
-                self.fail(f"daemon exited: {daemon.stderr.read()}")
+                self.fail(f"daemon exited: {self._daemon_output(daemon)}")
             time.sleep(0.01)
         self.fail("daemon socket was not created")
 

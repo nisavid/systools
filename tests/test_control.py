@@ -311,7 +311,7 @@ class ControlPlaneProcessSeamTests(unittest.TestCase):
             RequestMetricEvent(
                 "chat",
                 "tiny",
-                started["instance_id"],
+                started["run_id"],
                 datetime(2026, 7, 13, 20, tzinfo=UTC),
                 25.0,
                 5.0,

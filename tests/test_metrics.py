@@ -22,7 +22,7 @@ class MetricsEngineTests(unittest.TestCase):
                 RequestMetricEvent(
                     server_id="chat",
                     model_alias="tiny",
-                    instance_id="instance-1",
+                    run_id="run-1",
                     started_at=datetime(2026, 7, 13, 12, tzinfo=UTC),
                     duration_ms=100,
                     ttft_ms=20,
@@ -38,7 +38,7 @@ class MetricsEngineTests(unittest.TestCase):
                 RequestMetricEvent(
                     server_id="chat",
                     model_alias="tiny",
-                    instance_id="instance-1",
+                    run_id="run-1",
                     started_at=datetime(2026, 7, 13, 12, 1, tzinfo=UTC),
                     duration_ms=300,
                     ttft_ms=40,
@@ -75,7 +75,7 @@ class MetricsEngineTests(unittest.TestCase):
                 ProcessSample(
                     "chat",
                     "tiny",
-                    "instance-1",
+                    "run-1",
                     datetime(2026, 7, 13, 12, tzinfo=UTC),
                     1000,
                     25,
@@ -85,7 +85,7 @@ class MetricsEngineTests(unittest.TestCase):
                 ProcessSample(
                     "chat",
                     "tiny",
-                    "instance-1",
+                    "run-1",
                     datetime(2026, 7, 13, 12, 1, tzinfo=UTC),
                     3000,
                     75,
@@ -127,7 +127,7 @@ class MetricsEngineTests(unittest.TestCase):
             engine = MetricsEngine(Path(directory) / "metrics.sqlite3")
 
             def write(index: int) -> None:
-                engine.record(replace(self._request(), instance_id=f"instance-{index}"))
+                engine.record(replace(self._request(), run_id=f"run-{index}"))
 
             with ThreadPoolExecutor(max_workers=8) as pool:
                 writes = [pool.submit(write, index) for index in range(40)]
@@ -148,7 +148,7 @@ class MetricsEngineTests(unittest.TestCase):
                     RequestMetricEvent(
                         event.server_id,
                         event.model_alias,
-                        event.instance_id,
+                        event.run_id,
                         datetime(2026, 7, 12, hour, tzinfo=UTC),
                         event.duration_ms,
                         event.ttft_ms,
@@ -186,7 +186,7 @@ class MetricsEngineTests(unittest.TestCase):
             self.assertEqual(summary.failure_count, 3)
 
     def test_rejects_an_arbitrary_request_outcome(self) -> None:
-        with self.assertRaisesRegex(ValueError, "outcome must be a RequestOutcome"):
+        with self.assertRaisesRegex(TypeError, "outcome must be a RequestOutcome"):
             replace(self._request(), outcome="completed")
 
     @staticmethod
@@ -194,7 +194,7 @@ class MetricsEngineTests(unittest.TestCase):
         return RequestMetricEvent(
             server_id="chat",
             model_alias="tiny",
-            instance_id="instance-1",
+            run_id="run-1",
             started_at=datetime(2026, 7, 13, 12, tzinfo=UTC),
             duration_ms=100,
             ttft_ms=None,

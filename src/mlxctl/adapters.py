@@ -21,16 +21,16 @@ class Endpoint:
 
     def __post_init__(self) -> None:
         if not isinstance(self.host, str):
-            raise ValueError("upstream host must be a string")
+            raise TypeError("endpoint host must be a string")
         host = "127.0.0.1" if self.host == "localhost" else self.host
         try:
             address = ip_address(host)
         except ValueError:
             address = None
         if address is None or not address.is_loopback:
-            raise ValueError(f"upstream host '{self.host}' is not loopback")
+            raise ValueError(f"endpoint host '{self.host}' is not loopback")
         if type(self.port) is not int or not 1 <= self.port <= 65535:
-            raise ValueError("upstream port must be in 1..65535")
+            raise ValueError("endpoint port must be in 1..65535")
         object.__setattr__(self, "host", address.compressed)
 
 
@@ -127,10 +127,10 @@ class AdapterRegistry:
         model: ModelDefinition,
         upstream: Endpoint,
     ) -> PreparedServer:
-        if definition.model != model.id:
+        if definition.model != model.alias:
             raise AdapterError(
-                f"server '{definition.id}' expects model alias '{definition.model}', "
-                f"not '{model.id}'"
+                f"server '{definition.name}' expects model alias '{definition.model}', "
+                f"not '{model.alias}'"
             )
         try:
             adapter = self._adapters[definition.type]

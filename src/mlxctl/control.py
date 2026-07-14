@@ -187,7 +187,7 @@ class ControlPlane:
             if (
                 server_id is not None
                 and not configured_ids
-                and (server_id not in by_id or by_id[server_id].model_id is None)
+                and (server_id not in by_id or by_id[server_id].model_alias is None)
             ):
                 raise ControlDomainError(
                     "server_not_found", f"server '{server_id}' is not configured"
@@ -609,11 +609,11 @@ def _read_line(connection: socket.socket, maximum: int) -> bytes:
 def _status_value(status: ManagedServerStatus) -> dict[str, object]:
     return {
         "server_id": status.server_id,
-        "model_alias": status.model_id,
+        "model_alias": status.model_alias,
         "lifecycle": status.lifecycle.value,
         "client_endpoint": _endpoint_value(status.client_endpoint),
         "upstream_endpoint": _endpoint_value(status.upstream_endpoint),
-        "instance_id": status.instance_id,
+        "run_id": status.run_id,
         "pid": status.pid,
         "advertised_models": status.advertised_models,
         "error": (

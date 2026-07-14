@@ -120,9 +120,9 @@ max_context = 8192
             ),
         )
 
-    def test_rejects_a_non_loopback_upstream_endpoint(self) -> None:
+    def test_rejects_a_non_loopback_endpoint(self) -> None:
         with self.assertRaisesRegex(
-            ValueError, "upstream host '0.0.0.0' is not loopback"
+            ValueError, "endpoint host '0.0.0.0' is not loopback"
         ):
             Endpoint("0.0.0.0", 49152)
 

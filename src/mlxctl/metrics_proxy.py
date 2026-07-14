@@ -45,14 +45,14 @@ class MetricsProxy:
         engine: _MetricRecorder,
         server_id: str,
         model_alias: str,
-        instance_id: str,
+        run_id: str,
     ) -> None:
         self.client_endpoint = client_endpoint
         self.upstream_endpoint = upstream_endpoint
         self._engine = engine
         self._server_id = server_id
         self._model_alias = model_alias
-        self._instance_id = instance_id
+        self._run_id = run_id
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._active_lock = threading.Lock()
@@ -408,22 +408,23 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             if connection is not None:
                 connection.close()
                 self.proxy._unregister_upstream(connection)
-            self.proxy._engine.record(
-                RequestMetricEvent(
-                    server_id=self.proxy._server_id,
-                    model_alias=self.proxy._model_alias,
-                    instance_id=self.proxy._instance_id,
-                    started_at=started_at,
-                    duration_ms=(time.monotonic() - started) * 1000,
-                    ttft_ms=ttft_ms,
-                    status_code=status_code,
-                    outcome=outcome,
-                    prompt_tokens=usage[0],
-                    completion_tokens=usage[1],
-                    total_tokens=usage[2],
-                    cached_tokens=usage[3],
+            if self.command == "POST":
+                self.proxy._engine.record(
+                    RequestMetricEvent(
+                        server_id=self.proxy._server_id,
+                        model_alias=self.proxy._model_alias,
+                        run_id=self.proxy._run_id,
+                        started_at=started_at,
+                        duration_ms=(time.monotonic() - started) * 1000,
+                        ttft_ms=ttft_ms,
+                        status_code=status_code,
+                        outcome=outcome,
+                        prompt_tokens=usage[0],
+                        completion_tokens=usage[1],
+                        total_tokens=usage[2],
+                        cached_tokens=usage[3],
+                    )
                 )
-            )
 
     def _request_body(self) -> bytes | bytearray:
         lengths = self.headers.get_all("Content-Length", [])
