@@ -37,9 +37,18 @@ convention for logs.
 
 ### Config directory (`~/.config/mlxd/`)
 
-Server definitions, model registry, default inference params, metrics
-retention settings. File format decided separately (see wayfinder ticket
-#7).
+`config.toml` is the versioned configuration surface. Schema version 1 contains
+daemon timeouts and sampling cadence, metrics retention, Model Alias to Model
+Reference mappings, and named Server Definitions. Each Server Definition names
+its Server Type, Model Alias, loopback Client Endpoint, environment, and
+server-type-specific options. Unknown fields, unsupported server types,
+non-loopback addresses, invalid ports, and duplicate Client Endpoints are
+rejected before the Supervisor starts.
+
+Client Endpoint ports are declared statically in `config.toml`. When a Server
+Definition starts, the Supervisor allocates a private ephemeral Upstream
+Endpoint on `127.0.0.1`; the metrics proxy retains the configured Client
+Endpoint while forwarding requests to that process.
 
 ### State directory (`~/.local/state/mlxd/`)
 
@@ -83,10 +92,7 @@ The plist sets these in `EnvironmentVariables`:
 
 ## Follow-up (Not in v1)
 
-These graduate as separate contract revisions once the relevant wayfinder
-tickets resolve:
+These graduate as separate contract revisions once their requirements resolve:
 
-- **Server port allocation** — how `mlxctl` assigns ports to individual
-  MLX servers (static config vs. dynamic allocation).
 - **Log level** — `MLXD_LOG_LEVEL` env var.
 - **Full env-var set** — any additional variables the supervisor needs.
