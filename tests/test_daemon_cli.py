@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import signal
 import socket
@@ -8,11 +9,12 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from typing import TextIO
 from unittest import mock
 
-from mlxctl import cli
+from mlxctl import cli, daemon as daemon_module
 from mlxctl.control import ControlClient, ControlRequest
 
 
@@ -165,6 +167,15 @@ class DaemonCliProcessTests(unittest.TestCase):
             TypeError, "expected an object response for 'status', got list"
         ):
             cli._print_human("status", [])
+
+    def test_daemon_rejects_nonfinite_idle_grace_values(self) -> None:
+        for value in ("nan", "inf", "-inf"):
+            with (
+                self.subTest(value=value),
+                redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                daemon_module._parser().parse_args([f"--idle-grace-seconds={value}"])
 
     def _start_daemon(self, *, idle_grace: str) -> subprocess.Popen[str]:
         log_stream = tempfile.TemporaryFile(mode="w+", encoding="utf-8")

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Iterator
+
+
+_SCHEMA_LOCK = threading.Lock()
 
 
 class RequestOutcome(StrEnum):
@@ -83,7 +87,7 @@ class MetricsEngine:
         self._path = Path(path)
         self._retention = timedelta(days=retention_days)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as connection:
+        with _SCHEMA_LOCK, self._connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version not in (0, self._SCHEMA_VERSION):
                 raise RuntimeError(f"unsupported metrics schema version {version}")
@@ -91,7 +95,7 @@ class MetricsEngine:
                 connection.executescript(
                     """
                     BEGIN IMMEDIATE;
-                    CREATE TABLE request_metrics (
+                    CREATE TABLE IF NOT EXISTS request_metrics (
                         id INTEGER PRIMARY KEY,
                         server_id TEXT NOT NULL,
                         model_alias TEXT NOT NULL,
@@ -108,9 +112,9 @@ class MetricsEngine:
                         total_tokens INTEGER,
                         cached_tokens INTEGER
                     );
-                    CREATE INDEX request_metrics_query
+                    CREATE INDEX IF NOT EXISTS request_metrics_query
                         ON request_metrics(server_id, model_alias, started_at);
-                    CREATE TABLE process_samples (
+                    CREATE TABLE IF NOT EXISTS process_samples (
                         id INTEGER PRIMARY KEY,
                         server_id TEXT NOT NULL,
                         model_alias TEXT NOT NULL,
@@ -119,7 +123,7 @@ class MetricsEngine:
                         rss_bytes INTEGER NOT NULL,
                         cpu_percent REAL NOT NULL
                     );
-                    CREATE INDEX process_samples_query
+                    CREATE INDEX IF NOT EXISTS process_samples_query
                         ON process_samples(server_id, model_alias, sampled_at);
                     PRAGMA user_version = 1;
                     COMMIT;

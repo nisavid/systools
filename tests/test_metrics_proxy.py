@@ -118,7 +118,7 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:
+    def log_message(self, format_string: str, *args: object) -> None:
         pass
 
     def _chunk(self, body: bytes) -> None:
@@ -278,6 +278,40 @@ class MetricsProxyTests(unittest.TestCase):
 
             with self.assertRaises(OSError):
                 socket.create_connection((client.host, client.port), timeout=0.2)
+
+    def test_metric_persistence_failure_preserves_keep_alive_responses(self) -> None:
+        with (
+            self._upstream() as upstream,
+            self._proxy(upstream, engine=_FailingEngine()) as proxy,
+            self.assertLogs("mlxctl.metrics_proxy", level="ERROR") as logs,
+        ):
+            response = self._raw_response(
+                proxy.client_endpoint,
+                b"POST /v1/chat/completions HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 2\r\n\r\n{}"
+                b"POST /v1/chat/completions HTTP/1.1\r\n"
+                b"Host: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            )
+
+        self.assertEqual(response.count(b"HTTP/1.1 201 Generated\r\n"), 2)
+        self.assertEqual(len(logs.records), 2)
+
+    def test_incomplete_request_is_closed_after_downstream_timeout(self) -> None:
+        proxy = self._proxy(Endpoint("127.0.0.1", self._free_port()))
+        proxy.DOWNSTREAM_IO_TIMEOUT_SECONDS = 0.1
+        with proxy:
+            client = socket.create_connection(
+                (proxy.client_endpoint.host, proxy.client_endpoint.port), timeout=1
+            )
+            try:
+                client.sendall(
+                    b"POST / HTTP/1.1\r\nHost: localhost\r\n"
+                    b"Content-Length: 100\r\n\r\npartial"
+                )
+                client.settimeout(0.5)
+                self.assertEqual(client.recv(1), b"")
+            finally:
+                client.close()
 
     def test_close_is_bounded_with_an_active_sse(self) -> None:
         with self._upstream() as upstream:
@@ -523,6 +557,11 @@ class _RecordingEngine:
     def record(self, event: RequestMetricEvent) -> None:
         self.events.append(event)
         self.recorded.set()
+
+
+class _FailingEngine:
+    def record(self, event: RequestMetricEvent) -> None:
+        raise RuntimeError("metrics unavailable")
 
 
 class _GatedHTTPConnection(http.client.HTTPConnection):
