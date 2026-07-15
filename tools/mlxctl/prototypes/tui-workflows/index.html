@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Throwaway prototype comparing three terminal information architectures for mlxctl.">
+  <title>mlxctl TUI workflow prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="prototype-mark">THROWAWAY PROTOTYPE · STATIC FIXTURE · NO OPERATIONS EXECUTE</div>
+  <main id="prototype"></main>
+  <div class="switcher" role="toolbar" aria-label="Prototype variant switcher">
+    <button id="previous" aria-label="Previous variant">←</button>
+    <div><small>PROTOTYPE VARIANT</small><strong id="variant-label"></strong></div>
+    <button id="next" aria-label="Next variant">→</button>
+  </div>
+  <div class="palette" hidden><div><input name="palette-query" aria-label="Command palette query" placeholder="Type an operation or resource…"><button>◆ Create Inference Service</button><button>✚ Run Doctor</button><button>⌁ Open logs and metrics</button><button>◎ Stop Supervisor safely</button><small>Static prototype · press Esc to close</small></div></div>
+  <script src="app.js"></script>
+</body>
+</html>
