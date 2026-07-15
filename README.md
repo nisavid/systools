@@ -11,7 +11,7 @@ shared navigation and repository policy.
 
 | Tool | What it does | Start here |
 | --- | --- | --- |
-| `mlxctl` | Runs named local MLX inference servers behind stable loopback endpoints, with lifecycle controls, metrics, and a terminal dashboard. | [`tools/mlxctl/README.md`](tools/mlxctl/README.md) |
+| `mlxctl` | Installs MLX runtimes and exact models, then runs multiple named local inference services behind one stable loopback Gateway. | [`tools/mlxctl/README.md`](tools/mlxctl/README.md) |
 
 `mlxctl` is currently the only usable tool. New tools will appear here as
 they become usable.
