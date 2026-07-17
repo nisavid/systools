@@ -1,5 +1,22 @@
 # Repository instructions
 
+## Agent skills
+
+### Issue tracker
+
+Track issues and PRDs in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default canonical triage labels: `needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, and `wontfix`. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use the repository's multi-context domain layout routed by `CONTEXT-MAP.md`.
+See `docs/agents/domain.md`.
+
 ## Route work by context
 
 Read `CONTEXT-MAP.md` before planning or editing. For every changed

@@ -1,0 +1,4 @@
+.agents/skills/** -whitespace
+.claude/skills/** -whitespace
+.github/skills/** -whitespace
+agent/skills/** -whitespace
