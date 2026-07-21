@@ -16,6 +16,12 @@ shared navigation and repository policy.
 `mlxctl` is currently the only usable tool. New tools will appear here as
 they become usable.
 
+## Related projects
+
+[Cloud Quota Manager](https://github.com/nisavid/cqmgr) is developed in its
+own repository under the `cqmgr` command name. Its planning history, product
+context, design context, research, and issue tracker live there.
+
 ## Explore the repository
 
 - **Use a tool:** open its README from the table above.

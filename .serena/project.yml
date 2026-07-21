@@ -135,7 +135,7 @@ added_modes:
 initial_prompt: >-
   Treat the Git repository root as the Serena project boundary. Read
   CONTEXT-MAP.md, route work by repository path, then consult the path-relevant
-  context and memory namespace before acting. Treat future nested Git
+  context and memory namespace before acting. Treat nested Git
   repositories and submodules as separate Serena projects; never add sibling
   worktrees as workspace folders.
 
