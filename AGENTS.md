@@ -43,20 +43,7 @@ uv build
 ```
 
 Changes to the deployment contract also require validation in the dotfiles
-repository and a scoped installation check. Changes to root Serena or context
-routing require:
-
-```sh
-serena project health-check .
-serena memories check
-```
+repository and a scoped installation check.
 
 Every change requires `git diff --check`. Commit messages follow the
 Conventional Commit policy enforced by `cog.toml` and the repository hooks.
-
-## Keep Serena repository-scoped
-
-Use one Serena project rooted at this Git repository. Keep checkout identity in
-ignored `.serena/project.local.yml`, repository-wide memories under `repo/*`,
-and tool memories under the matching tool namespace such as `mlxctl/*`.
-Sibling worktrees are separate checkouts, not Serena workspace folders.
