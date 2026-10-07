@@ -24,10 +24,12 @@ GitHub sub-issues labeled `wayfinder:research`, `wayfinder:prototype`,
 contracts; maps and their decision tickets use only these labels rather than
 the ordinary intake labels above.
 
-The examples use `gh` as the fallback CLI. Bind `MAP` and `TICKET` to issue
+The examples require GitHub CLI 2.94.0 or later. Check `gh --version` before
+using them. Bind `MAP` and `TICKET` to issue
 numbers in this repository, `BLOCKER_URL` to the prerequisite issue's full URL,
 `TICKET_LABEL` to its Wayfinder type, and the title/body variables to prepared
-content. Body variables are paths to UTF-8 Markdown files.
+content. Bind `DRIVING_DEVELOPER` to the developer driving the map, `nisavid`
+for Ivan’s workflow. Body variables are paths to UTF-8 Markdown files.
 
 ```sh
 # Create the map, then its children using the returned map number.
@@ -44,7 +46,7 @@ gh issue view "$TICKET" --repo nisavid/systools --json number,state,assignees,bl
 gh issue edit "$TICKET" --repo nisavid/systools --add-blocked-by "$BLOCKER_URL"
 
 # Claim before work; resolution records the answer before closure.
-gh issue edit "$TICKET" --repo nisavid/systools --add-assignee nisavid
+gh issue edit "$TICKET" --repo nisavid/systools --add-assignee "$DRIVING_DEVELOPER"
 gh issue comment "$TICKET" --repo nisavid/systools --body-file "$RESOLUTION_BODY"
 gh issue close "$TICKET" --repo nisavid/systools
 
