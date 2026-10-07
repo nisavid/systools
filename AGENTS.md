@@ -47,3 +47,19 @@ repository and a scoped installation check.
 
 Every change requires `git diff --check`. Commit messages follow the
 Conventional Commit policy enforced by `cog.toml` and the repository hooks.
+
+## Agent skills
+
+### Issue tracker
+
+Track repository work in `nisavid/systools` GitHub Issues. Read
+`docs/agents/issue-tracker.md` before ticket operations.
+
+### Triage labels
+
+Use the five canonical triage labels in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo has one context per tool. Read `docs/agents/domain.md` for the
+existing context map, glossary locations, and ADR consumer rules.
