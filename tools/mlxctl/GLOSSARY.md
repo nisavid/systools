@@ -7,8 +7,8 @@ network addresses distinct.
 ## Language
 
 **Runtime Definition**:
-Built-in knowledge of a supported inference runtime family, including how to
-discover, install, launch, and probe its versioned capabilities.
+mlxctl's built-in description of a supported inference runtime family and its
+versioned capabilities.
 _Avoid_: Installed runtime, backend, provider
 
 **Runtime Installation**:
@@ -22,8 +22,8 @@ model. A candidate is not proof of compatibility or local availability.
 _Avoid_: Model Installation, available model
 
 **Model Revision**:
-An immutable model-content identity, normally a repository plus commit SHA.
-Local content uses an equivalent provenance manifest.
+An immutable identity for one exact body of model content, independent of its
+local availability or user-facing name.
 _Avoid_: Model Alias, mutable branch or tag
 
 **Cached Revision**:
@@ -53,7 +53,8 @@ _Avoid_: Machine profile, client profile, agent count
 
 **Client Concurrency**:
 The maximum number of inference requests that may be in flight together for a
-client or service. Idle clients consume no slot; excess requests queue.
+client or Inference Service, distinct from the number of configured or idle
+clients.
 _Avoid_: Number of configured clients, number of agents
 
 **Pinned Inference Service**:
@@ -63,12 +64,12 @@ operator-approved transition plans.
 _Avoid_: Ready service, active service
 
 **Service Run**:
-One concrete activation of an Inference Service, identified by a run ID for
-lifecycle, diagnostics, and metrics correlation.
+One concrete activation of an Inference Service, distinct from its desired
+state and any earlier or later activation.
 _Avoid_: Inference Service, instance
 
 **Gateway**:
-The stable loopback client endpoint that routes requests by service or model
+The stable local client endpoint that routes requests by service or model
 identity to private runtime upstreams.
 _Avoid_: Supervisor, runtime server
 
@@ -78,12 +79,12 @@ Gateway.
 _Avoid_: Upstream Endpoint, runtime port
 
 **Upstream Endpoint**:
-A private loopback address allocated to one Service Run. It is not part of the
+A private local address for one Service Run. It is not part of the
 user-facing configuration contract.
 _Avoid_: Gateway Route, client endpoint
 
 **Supervisor**:
-The explicitly managed per-user daemon that reconciles Inference Services,
+The explicitly managed per-user lifecycle owner for Inference Services,
 Service Runs, the Gateway, and operational state.
 _Avoid_: Gateway, runtime server, worker
 
@@ -92,11 +93,6 @@ Evidence about one exact Model Revision, Runtime Installation, launch-option
 set, and machine. Its state is reported, declared, derived, validated,
 conflicting, or unknown.
 _Avoid_: Boolean support flag, cache presence
-
-**Probe**:
-A liveness, readiness, capability, or model-introspection observation of a
-running component.
-_Avoid_: Ping, status request
 
 **Request Metric Event**:
 An immutable observation of one inference request's identity, timing, outcome,

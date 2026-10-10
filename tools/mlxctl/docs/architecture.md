@@ -98,7 +98,17 @@ creation. An option is never emitted merely because its Runtime Definition
 recognizes the name. OptiQ and the `mlx_lm` installation it delegates to are
 recorded and probed as one compatibility bundle.
 
+Probes are infrastructure observations of a component's liveness, readiness,
+capabilities, or model information. They supply evidence about managed
+resources rather than defining another managed resource.
+
 ## Model management
+
+Model Revision identity is a repository ID and immutable commit SHA. An adopted
+local Model Installation retains that identity and records its absolute path
+and provenance separately; a local path or provenance manifest does not replace
+the revision. Adoption verifies the external snapshot against the exact
+revision's repository security evidence before persisting the installation.
 
 Catalog and model operations use `huggingface_hub` APIs for search,
 exact-revision snapshots, offline lookup, cache inventory, and safe deletion.

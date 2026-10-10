@@ -60,8 +60,9 @@ On the 48 GiB target, guided setup offers three coherent capacity profiles:
 
 Choose one directly with `mlxctl setup --capacity long-context`. A concurrency
 slot is used only by an in-flight inference request: idle agents use no slot,
-and requests beyond the selected limit queue. All three profiles keep the same
-projected persistent KV budget and a 2 GiB prompt-prefix cache; they trade
+and the Gateway rejects requests beyond the selected limit with a retryable
+`429 service_busy` response. All three profiles keep the same projected
+persistent KV budget and a 2 GiB prompt-prefix cache; they trade
 context per request for concurrency without silently giving clients a larger
 window than the service accepts. The complete resolved values remain visible
 and editable in the CLI and TUI review plan.
