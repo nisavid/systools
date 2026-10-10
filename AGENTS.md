@@ -2,8 +2,8 @@
 
 ## Route work by context
 
-Read `CONTEXT-MAP.md` before planning or editing. For every changed
-`tools/<tool>/` path, read that tool's `CONTEXT.md`. Root-wide work has no
+Read `GLOSSARY-MAP.md` before planning or editing. For every changed
+`tools/<tool>/` path, read that tool's `GLOSSARY.md`. Root-wide work has no
 product glossary unless the map assigns one. Use the selected context's
 vocabulary in code, tests, documentation, issues, and commits.
 
@@ -21,7 +21,7 @@ with the repository that owns the deployment before publication.
 
 - `README.md` files are human-facing entrypoints. Route readers by goal and
   keep commands and behavioral claims verified against the current product.
-- `CONTEXT.md` files define agent-facing domain language. Update them only when
+- `GLOSSARY.md` files define agent-facing domain language. Update them only when
   the domain model changes.
 - `AGENTS.md` contains executable agent instructions. Keep each rule
   repository-specific, checkable, and in one authoritative location.

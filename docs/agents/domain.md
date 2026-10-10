@@ -3,11 +3,8 @@
 ## Select the context
 
 Follow [Route work by context](../../AGENTS.md#route-work-by-context) in the
-repository instructions. The root `CONTEXT-MAP.md` identifies each tool's
-context file.
-
-The engineering skills' glossary role is served by these existing `CONTEXT.md`
-files.
+repository instructions. The root `GLOSSARY-MAP.md` identifies each tool's
+`GLOSSARY.md`. Read the glossary for each tool the work affects.
 
 ## Read decisions when relevant
 
