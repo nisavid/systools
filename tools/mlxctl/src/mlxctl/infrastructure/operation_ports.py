@@ -13,10 +13,10 @@ from mlxctl.application.config_schema import (
     validate_hindsight_profile_name,
 )
 from mlxctl.application.dispatch import ApplicationError
-from mlxctl.infrastructure.control_client import ControlClientError, UnixControlClient
 from mlxctl.infrastructure.client_integrations import (
     ClientConfiguration,
 )
+from mlxctl.infrastructure.control_client import ControlClientError, UnixControlClient
 from mlxctl.infrastructure.supervisor_v1 import Supervisor
 
 
@@ -86,9 +86,7 @@ class SupervisorOperationPort:
             value = self._supervisor.start()
         elif operation == "supervisor.stop":
             value = self._supervisor.stop()
-        elif operation == "supervisor.restart":
-            value = self._supervisor.restart()
-        elif operation == "gateway.restart":
+        elif operation == "supervisor.restart" or operation == "gateway.restart":
             value = self._supervisor.restart()
         elif operation == "service.start":
             value = self._supervisor.start_service(resource)

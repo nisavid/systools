@@ -8,10 +8,10 @@ import re
 import stat
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence
-
+from typing import Protocol
 
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 _PID = re.compile(r"^\s*pid\s*=\s*(\d+)\s*$", re.MULTILINE)

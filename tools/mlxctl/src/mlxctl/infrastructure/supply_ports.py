@@ -8,9 +8,10 @@ import os
 import re
 import shutil
 import stat
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Protocol
 
 import tomlkit
 
@@ -24,11 +25,15 @@ from mlxctl.infrastructure.model_intelligence import (
 from mlxctl.infrastructure.model_supply import (
     CachedRevision,
     ModelInstallResult,
-    ModelInstallation as SuppliedModelInstallation,
     ModelProvenance,
-    ModelRevision as SuppliedModelRevision,
     ModelSupply,
     VerificationResult,
+)
+from mlxctl.infrastructure.model_supply import (
+    ModelInstallation as SuppliedModelInstallation,
+)
+from mlxctl.infrastructure.model_supply import (
+    ModelRevision as SuppliedModelRevision,
 )
 from mlxctl.infrastructure.runtime_supply import (
     RuntimeCatalogue,
@@ -837,7 +842,8 @@ class RuntimeSupplyPort:
         if not choices:
             qualifier = f" bundle {bundle_id!r}" if bundle_id else ""
             raise SupplyPortError(f"no tested {runtime!r}{qualifier} is available")
-        return sorted(choices, key=lambda item: (item.version, item.bundle_id))[-1]
+        # Preserve the last catalogue entry when version and bundle ID tie.
+        return max(reversed(choices), key=lambda item: (item.version, item.bundle_id))
 
     def _switch_runtime_references(self, current: str, target: str) -> None:
         def mutation(document) -> None:

@@ -8,10 +8,9 @@ import os
 import sqlite3
 import stat
 import threading
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Mapping
-
 
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_VERSION = 1
@@ -434,5 +433,6 @@ def _encode(dto: Mapping[str, object]) -> str:
 def _decode(payload: str) -> dict[str, object]:
     value = json.loads(payload)
     if not isinstance(value, dict):
-        raise RuntimeError("stored operational DTO is not an object")
+        # Malformed persisted state is an operational failure.
+        raise RuntimeError("stored operational DTO is not an object")  # noqa: TRY004
     return _record(value)

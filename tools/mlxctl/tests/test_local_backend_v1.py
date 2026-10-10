@@ -10,8 +10,8 @@ from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.control_protocol import MAX_FRAME_BYTES
 from mlxctl.infrastructure.local_backend import LocalOperationBackend
 from mlxctl.infrastructure.model_supply import (
-    CacheInventory,
     CachedRevision,
+    CacheInventory,
     CatalogCandidate,
     ModelRevision,
     ModelSupply,
@@ -19,7 +19,6 @@ from mlxctl.infrastructure.model_supply import (
 )
 from mlxctl.infrastructure.runtime_supply import RuntimeCatalogue
 from mlxctl.infrastructure.state_store import OperationalStateStore
-
 
 _EMPTY_CONFIG = """\
 schema_version = 1
@@ -649,7 +648,7 @@ class LocalOperationBackendTests(unittest.TestCase):
             request = OperationRequest("service.remove", {"resource": "chat"})
             fingerprint = backend.prepare(request).events[-1]["plan_fingerprint"]
 
-            backend._config_store.edit(  # noqa: SLF001 - verifies stale-plan boundary.
+            backend._config_store.edit(
                 lambda document: document["gateway"].update({"port": 9000})
             )
 

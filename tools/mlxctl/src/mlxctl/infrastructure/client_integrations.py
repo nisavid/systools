@@ -9,11 +9,12 @@ import os
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping, TypeVar
+from typing import TypeVar
 from urllib.parse import urlsplit
 
 import tomlkit
@@ -24,7 +25,6 @@ from mlxctl.application.config_schema import (
     validate_hindsight_profile_name,
 )
 from mlxctl.infrastructure.gateway_credential import read_gateway_token
-
 
 _HINDSIGHT_API_KEY = "HINDSIGHT_API_LLM_API_KEY"
 _REDACTED = "<redacted>"

@@ -8,15 +8,15 @@ import json
 import os
 import stat
 import tempfile
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Generic, Iterator, Mapping, Sequence, TypeVar
+from typing import Generic, TypeVar
 
 import tomlkit
 from tomlkit.toml_document import TOMLDocument
-
 
 ValidatedConfig = TypeVar("ValidatedConfig")
 ConfigValidator = Callable[[Mapping[str, object]], ValidatedConfig]
@@ -267,7 +267,8 @@ class ConfigStore(Generic[ValidatedConfig]):
             try:
                 raw = json.loads(line) if complete else None
                 if not isinstance(raw, dict):
-                    raise ValueError("journal entry must be an object")
+                    # A decoded journal value can violate the record schema.
+                    raise ValueError("journal entry must be an object")  # noqa: TRY004
                 records.append(ConfigRevision(**raw))
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 if index != len(lines) - 1 or complete:

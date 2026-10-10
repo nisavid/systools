@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import stat
 import socket
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +12,23 @@ import tomlkit
 
 from mlxctl.application.config_schema import validate_config
 from mlxctl.domain.admission import PressureLevel
+from mlxctl.infrastructure.model_supply import (
+    ModelInstallation as SuppliedModelInstallation,
+)
+from mlxctl.infrastructure.model_supply import ModelProvenance as SuppliedProvenance
+from mlxctl.infrastructure.model_supply import ModelRevision as SuppliedRevision
+from mlxctl.infrastructure.model_supply import (
+    VerificationResult,
+)
+from mlxctl.infrastructure.runtime_supply import (
+    RuntimeCatalogue,
+    RuntimeLaunchBuilder,
+    UnsupportedLaunchOption,
+)
+from mlxctl.infrastructure.runtime_supply import (
+    RuntimeInstallation as SuppliedRuntimeInstallation,
+)
+from mlxctl.infrastructure.supervisor_v1 import CapabilityValidationError
 from mlxctl.infrastructure.system_adapters import (
     ConfigDesiredState,
     ExactRuntimeLaunchSupply,
@@ -20,20 +37,6 @@ from mlxctl.infrastructure.system_adapters import (
     MacOSProcessProbe,
     SystemClock,
 )
-from mlxctl.infrastructure.model_supply import (
-    ModelInstallation as SuppliedModelInstallation,
-    VerificationResult,
-)
-from mlxctl.infrastructure.model_supply import ModelProvenance as SuppliedProvenance
-from mlxctl.infrastructure.model_supply import ModelRevision as SuppliedRevision
-from mlxctl.infrastructure.runtime_supply import (
-    RuntimeCatalogue,
-    RuntimeInstallation as SuppliedRuntimeInstallation,
-    RuntimeLaunchBuilder,
-    UnsupportedLaunchOption,
-)
-from mlxctl.infrastructure.supervisor_v1 import CapabilityValidationError
-
 
 _REVISION = "70a3aa32c7feef511182bf16aa332f37e8d82014"
 

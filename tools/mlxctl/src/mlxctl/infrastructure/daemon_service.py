@@ -368,7 +368,8 @@ class DaemonService:
                 except TimeoutError:
                     try:
                         await asyncio.to_thread(router.maintain)
-                    except Exception as error:
+                    # Adapter failures must not terminate the recurring maintenance loop.
+                    except Exception as error:  # noqa: BLE001
                         # A later pass may recover after a transient process/probe error.
                         await asyncio.to_thread(
                             router.record_maintenance_failure, error

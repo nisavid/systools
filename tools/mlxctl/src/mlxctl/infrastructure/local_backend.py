@@ -15,10 +15,10 @@ from mlxctl.application.config_schema import MlxctlConfig, validate_config
 from mlxctl.application.dispatch import ApplicationError, OperationRequest
 from mlxctl.application.manager import PreparedOperation
 from mlxctl.infrastructure.config_store import ConfigStore
+from mlxctl.infrastructure.model_intelligence import RuntimeObservation
 from mlxctl.infrastructure.model_supply import (
     ModelInstallation as SuppliedModelInstallation,
 )
-from mlxctl.infrastructure.model_intelligence import RuntimeObservation
 from mlxctl.infrastructure.model_supply import (
     ModelProvenance,
     ModelRevision,
@@ -477,7 +477,8 @@ class LocalOperationBackend:
                                 ),
                             }
                         )
-                except Exception as error:
+                # Optional Codex inspection failures become diagnostics, not a lost inventory.
+                except Exception as error:  # noqa: BLE001
                     issues.append(
                         {
                             "code": "codex_catalog_unknown",

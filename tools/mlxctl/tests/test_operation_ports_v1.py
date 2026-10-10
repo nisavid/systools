@@ -1,18 +1,18 @@
 import unittest
 from types import SimpleNamespace
 
+from mlxctl.application.config_schema import ClientSamplingSettings, ClientSettings
 from mlxctl.application.dispatch import ApplicationError
-from mlxctl.application.config_schema import ClientSettings, ClientSamplingSettings
+from mlxctl.infrastructure.client_integrations import (
+    ClientConfiguration,
+    ClientRemovalResult,
+    SamplingProfile,
+)
 from mlxctl.infrastructure.control_client import SupervisorUnavailableError
 from mlxctl.infrastructure.operation_ports import (
     ClientOperationPort,
     RemoteOperationPort,
     SupervisorOperationPort,
-)
-from mlxctl.infrastructure.client_integrations import (
-    ClientConfiguration,
-    ClientRemovalResult,
-    SamplingProfile,
 )
 
 

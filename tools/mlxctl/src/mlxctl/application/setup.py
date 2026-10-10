@@ -11,15 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from ipaddress import ip_address
 from types import MappingProxyType
-from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from mlxctl.domain.resources import ActivationPolicy, ResourceName
-
 
 # Bump whenever setup must recycle mlxd to load a changed control/schema contract.
 SUPERVISOR_SETUP_PROTOCOL = 2
@@ -119,7 +118,8 @@ class ExactSetupSelection:
             ),
         )
         if not isinstance(self.service_options, Mapping):
-            raise ValueError("service_options must be a JSON-like object")
+            # Setup input failures use ValueError for invalid_setup translation.
+            raise ValueError("service_options must be a JSON-like object")  # noqa: TRY004
         object.__setattr__(
             self,
             "service_options",
@@ -805,7 +805,8 @@ def _freeze_json_mapping(
     frozen: dict[str, object] = {}
     for key, item in value.items():
         if not isinstance(key, str):
-            raise ValueError(f"{scope} keys must be strings")
+            # JSON input validation uses ValueError, including invalid object keys.
+            raise ValueError(f"{scope} keys must be strings")  # noqa: TRY004
         frozen[key] = _freeze_json_value(item, f"{scope}.{key}")
     return MappingProxyType(frozen)
 

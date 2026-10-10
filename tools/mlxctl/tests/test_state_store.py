@@ -14,13 +14,15 @@ from mlxctl.infrastructure.state_store import (
 
 class OperationalStateStoreTests(unittest.TestCase):
     def test_rejects_a_state_directory_not_owned_by_the_current_user(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            with patch(
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
                 "mlxctl.infrastructure.state_store.os.getuid",
                 return_value=Path(directory).stat().st_uid + 1,
-            ):
-                with self.assertRaises(PermissionError):
-                    OperationalStateStore(Path(directory) / "state.sqlite3")
+            ),
+            self.assertRaises(PermissionError),
+        ):
+            OperationalStateStore(Path(directory) / "state.sqlite3")
 
     def test_rejects_symlinked_or_non_regular_database_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -46,13 +48,13 @@ class OperationalStateStoreTests(unittest.TestCase):
                 "password",
                 "access_token",
             ):
-                with self.subTest(key=key):
-                    with self.assertRaisesRegex(
+                with (
+                    self.subTest(key=key),
+                    self.assertRaisesRegex(
                         SensitiveContentError, "cannot persist credential material"
-                    ):
-                        store.put_operation(
-                            {"id": f"op-{key}", "details": {key: "secret"}}
-                        )
+                    ),
+                ):
+                    store.put_operation({"id": f"op-{key}", "details": {key: "secret"}})
 
     def test_persists_operations_progress_events_snapshots_and_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

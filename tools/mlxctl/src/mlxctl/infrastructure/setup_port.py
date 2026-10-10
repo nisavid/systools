@@ -692,7 +692,8 @@ def _material_result(
 ) -> Mapping[str, object]:
     result = material.get(step_id)
     if not isinstance(result, Mapping):
-        raise RuntimeError(
+        # Missing persisted resume evidence is an operational failure.
+        raise RuntimeError(  # noqa: TRY004
             f"matching {step_id} evidence lacks resumable material; rerun that step"
         )
     return result

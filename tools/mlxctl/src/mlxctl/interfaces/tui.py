@@ -7,7 +7,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from textual import events, work
 from textual.app import App, ComposeResult
@@ -71,7 +71,7 @@ class MlxctlApp(App[None]):
     SUB_TITLE = "local inference control room"
     COMMANDS = App.COMMANDS | {OperationCommands}
     COMMAND_PALETTE_BINDING = "ctrl+p"
-    BINDINGS = [
+    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
         ("ctrl+p", "command_palette", "Commands"),
         ("question_mark", "help", "Help"),
         ("q", "quit", "Quit"),
@@ -643,23 +643,27 @@ class MlxctlApp(App[None]):
         if name == "first-run":
             return (
                 "Create your first useful service",
-                "1  Check this Mac\n"
-                "2  Review the machine-aware recommended profile\n"
-                "3  Pin an exact Model Revision and inspect fit, trust, and cache\n"
-                "4  Install and probe the tested Runtime Installation\n"
-                "5  Name the service and stable Gateway route\n"
-                "6  Preview clients, resource effects, and verification request\n\n"
-                "Nothing changes until the complete plan is reviewed and confirmed. "
-                "Every recommendation remains editable.",
+                (
+                    "1  Check this Mac\n"
+                    "2  Review the machine-aware recommended profile\n"
+                    "3  Pin an exact Model Revision and inspect fit, trust, and cache\n"
+                    "4  Install and probe the tested Runtime Installation\n"
+                    "5  Name the service and stable Gateway route\n"
+                    "6  Preview clients, resource effects, and verification request\n\n"
+                    "Nothing changes until the complete plan is reviewed and confirmed. "
+                    "Every recommendation remains editable."
+                ),
             )
         if name == "help":
             return (
                 "Help for this screen",
-                "Ctrl+P opens every operation from the same operation catalogue used "
-                "by the CLI. Tab and arrow keys move focus; Enter opens; / filters "
-                "resource lists; q quits.\n\nState uses words and symbols as well as "
-                "color. Narrow terminals collapse panes without removing operations. "
-                "Read-only screens never start the Supervisor.",
+                (
+                    "Ctrl+P opens every operation from the same operation catalogue used "
+                    "by the CLI. Tab and arrow keys move focus; Enter opens; / filters "
+                    "resource lists; q quits.\n\nState uses words and symbols as well as "
+                    "color. Narrow terminals collapse panes without removing operations. "
+                    "Read-only screens never start the Supervisor."
+                ),
             )
         if name == "commands":
             groups: dict[str, list[Operation]] = {}

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from ipaddress import ip_address
-import math
 from pathlib import Path
-import re
 from types import MappingProxyType
-from typing import Mapping
 from urllib.parse import urlsplit
 
 from mlxctl.domain.resources import (

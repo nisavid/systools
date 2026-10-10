@@ -16,18 +16,18 @@ from mlxctl.application.config_schema import validate_config
 from mlxctl.application.dispatch import ApplicationError, OperationRequest
 from mlxctl.application.setup import SetupPreflight
 from mlxctl.infrastructure.config_store import ConfigStore
-from mlxctl.infrastructure.model_supply import CacheInventory, CachedRevision
-from mlxctl.infrastructure.gateway_credential import GatewayCredential
-from mlxctl.infrastructure.paths_v1 import MlxctlPaths
 from mlxctl.infrastructure.daemon_service import DaemonOperationRouter, DaemonService
+from mlxctl.infrastructure.gateway_credential import GatewayCredential
+from mlxctl.infrastructure.model_supply import CachedRevision, CacheInventory
+from mlxctl.infrastructure.paths_v1 import MlxctlPaths
 from mlxctl.infrastructure.production import (
     _ActivatingOperationOwner,
     _GatewayMutationGuard,
-    _LocalSupervisorOwner,
     _LocalModelSupply,
-    _SetupSupervisorOwner,
+    _LocalSupervisorOwner,
     _sampling_matches_service_model,
     _setup_planner,
+    _SetupSupervisorOwner,
     compose_daemon,
     compose_local,
     make_launchd,

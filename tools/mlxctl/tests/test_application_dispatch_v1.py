@@ -1,12 +1,12 @@
 import unittest
 
+from mlxctl.application.catalogue import build_operation_catalogue
 from mlxctl.application.dispatch import (
     ApplicationError,
     OperationDispatcher,
     OperationRequest,
     OperationResult,
 )
-from mlxctl.application.catalogue import build_operation_catalogue
 
 
 class _SupervisorActivator:

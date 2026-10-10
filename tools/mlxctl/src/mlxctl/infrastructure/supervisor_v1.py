@@ -8,9 +8,10 @@ It owns orchestration and policy; adapters own operating-system details.
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping, Protocol, Sequence
+from typing import Protocol
 
 from mlxctl.domain.admission import PressureLevel
 from mlxctl.domain.resources import ActivationPolicy, InferenceService, ServiceRunState
@@ -401,7 +402,8 @@ class Supervisor:
                 process = self._processes.launch(launch.argv, launch.environment)
                 run.process = process
                 identity = self._probe.identity(process)
-            except Exception as error:
+            # Any launch/probe failure must clean up the unverified process.
+            except Exception as error:  # noqa: BLE001
                 if run.process is not None and run.identity is None:
                     self._terminate_direct_locked(run.process)
                 return self._failed_start_locked(
@@ -430,7 +432,8 @@ class Supervisor:
                     )
             try:
                 ready = self._probe.is_ready(endpoint, self._readiness_poll_interval)
-            except Exception:
+            # Readiness failures remain unready until the bounded poll expires.
+            except Exception:  # noqa: BLE001
                 ready = False
             if ready:
                 with self._lock:
