@@ -8,11 +8,13 @@ import tempfile
 import threading
 import time
 from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
+from huggingface_hub import scan_cache_dir
 
 from mlxctl.application.config_schema import validate_config
 from mlxctl.application.dispatch import ApplicationError, OperationRequest
@@ -513,9 +515,17 @@ class TestProductionComposition:
             assert paths.gateway_credential.exists()
             assert stat.S_IMODE(paths.gateway_credential.stat().st_mode) == 0o600
 
-    def test_production_graphs_reject_adoption_inside_owned_data(self) -> None:
+    def test_production_graphs_reject_adoption_inside_owned_data(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            cache = root / "hub-cache"
+            cache.mkdir()
+            monkeypatch.setattr(
+                "huggingface_hub.scan_cache_dir",
+                partial(scan_cache_dir, cache_dir=cache),
+            )
             paths = MlxctlPaths(
                 root / "config", root / "state", root / "data", root / "logs"
             )

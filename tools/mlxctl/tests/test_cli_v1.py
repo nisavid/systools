@@ -1,6 +1,10 @@
 import json
+import os
+import subprocess
+import sys
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from mlxctl.application.catalogue import build_operation_catalogue
@@ -196,17 +200,40 @@ class TestCliV1:
         assert parameters["clients"] == ["codex", "hindsight"]
         assert parameters["plan_fingerprint"] == "sha256:exact"
 
-    def test_setup_help_explains_capacity_choices_and_concurrency(self) -> None:
-        result = self.runner.invoke(self.app, ["setup", "--help"])
+    @pytest.mark.parametrize("color", [False, True])
+    def test_setup_help_explains_capacity_choices_and_concurrency(
+        self, color: bool
+    ) -> None:
+        environment = os.environ.copy()
+        for key in (
+            "NO_COLOR",
+            "FORCE_COLOR",
+            "PY_COLORS",
+            "GITHUB_ACTIONS",
+            "_TYPER_FORCE_DISABLE_TERMINAL",
+        ):
+            environment.pop(key, None)
+        environment.update(TERM="xterm" if color else "dumb", COLUMNS="80")
+        environment["FORCE_COLOR" if color else "NO_COLOR"] = "1"
+        result = subprocess.run(
+            [sys.executable, "-m", "mlxctl.entrypoints", "setup", "--help"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
 
-        assert result.exit_code == 0, result.output
-        assert "--capacity" in result.output
-        assert "balanced" in result.output
-        assert "long-context" in result.output
-        assert "native-context" in result.output
-        assert "simultaneous inference requests" in result.output
-        assert "prefill at 4-7 requests" in result.output
-        assert "8 permits" in result.output
+        assert result.returncode == 0, result.stdout + result.stderr
+        output = unstyle(result.stdout)
+        assert (result.stdout != output) is color
+        assert "--capacity" in output
+        assert "balanced" in output
+        assert "long-context" in output
+        assert "native-context" in output
+        assert "simultaneous inference requests" in output
+        assert "prefill at 4-7 requests" in output
+        assert "8 permits" in output
 
     def test_machine_errors_are_stable_and_human_errors_offer_next_action(self) -> None:
         machine = self.runner.invoke(self.app, ["doctor", "--json"])
