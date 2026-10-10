@@ -8,13 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 
 import tomlkit
+from tomlkit.exceptions import ParseError
 
 from mlxctl.application.config_schema import ClientSettings
 from mlxctl.infrastructure.client_integrations import (
     ClientConfiguration,
     ClientIntegrationConflict,
-    CodexModelMetadata,
     CodexClientIntegration,
+    CodexModelMetadata,
     HindsightClientIntegration,
     LocalClientIntegrationFactory,
     SamplingProfile,
@@ -726,7 +727,7 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             )
             before = config.read_bytes()
 
-            with self.assertRaises(Exception):
+            with self.assertRaises(ParseError):
                 adapter.apply(self.configuration)
             self.assertEqual(config.read_bytes(), before)
 

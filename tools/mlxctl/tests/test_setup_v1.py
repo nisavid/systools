@@ -15,7 +15,6 @@ from mlxctl.application.setup import (
     _fingerprint,
 )
 
-
 GIB = 1024**3
 
 

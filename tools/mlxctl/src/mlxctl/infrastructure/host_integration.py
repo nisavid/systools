@@ -14,7 +14,6 @@ from typing import Protocol
 from mlxctl.application.dispatch import OperationRequest
 from mlxctl.interfaces.tui import ServiceSnapshot, TuiSnapshot
 
-
 _RESOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 

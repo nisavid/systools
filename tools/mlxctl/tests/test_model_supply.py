@@ -6,10 +6,10 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from mlxctl.infrastructure.model_supply import (
-    CacheInventory,
     CachedRevision,
-    HuggingFaceHubClient,
+    CacheInventory,
     HubModelRecord,
+    HuggingFaceHubClient,
     ModelSupply,
     VerificationResult,
 )

@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Callable, Mapping, Protocol
+from typing import Protocol
 from urllib.parse import quote, urlparse
-
 
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_METADATA_BYTES = 6 * 1024 * 1024
@@ -718,39 +718,39 @@ class _HuggingFaceMetadataFetcher:
             f"{quote(path, safe='/')}"
         )
         timeout = httpx.Timeout(10.0, connect=5.0)
-        with httpx.Client(
-            follow_redirects=True, timeout=timeout, max_redirects=5
-        ) as client:
-            with client.stream(
-                "GET", url, headers=build_hf_headers(token=None)
-            ) as response:
-                if response.status_code == 404:
-                    return None
-                response.raise_for_status()
-                _validate_hugging_face_url(str(response.url))
-                declared_size = response.headers.get("content-length")
-                if declared_size is not None:
-                    try:
-                        if int(declared_size) > max_bytes:
-                            raise ModelIntelligenceError(
-                                "metadata response exceeded the byte limit"
-                            )
-                    except ValueError as error:
-                        raise ModelIntelligenceError(
-                            "metadata response had an invalid content length"
-                        ) from error
-                body = bytearray()
-                for chunk in response.iter_bytes():
-                    body.extend(chunk)
-                    if len(body) > max_bytes:
+        with (
+            httpx.Client(
+                follow_redirects=True, timeout=timeout, max_redirects=5
+            ) as client,
+            client.stream("GET", url, headers=build_hf_headers(token=None)) as response,
+        ):
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            _validate_hugging_face_url(str(response.url))
+            declared_size = response.headers.get("content-length")
+            if declared_size is not None:
+                try:
+                    if int(declared_size) > max_bytes:
                         raise ModelIntelligenceError(
                             "metadata response exceeded the byte limit"
                         )
-                return MetadataPayload(
-                    path=path,
-                    content_type=response.headers.get("content-type", ""),
-                    body=bytes(body),
-                )
+                except ValueError as error:
+                    raise ModelIntelligenceError(
+                        "metadata response had an invalid content length"
+                    ) from error
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    raise ModelIntelligenceError(
+                        "metadata response exceeded the byte limit"
+                    )
+            return MetadataPayload(
+                path=path,
+                content_type=response.headers.get("content-type", ""),
+                body=bytes(body),
+            )
 
 
 class _HuggingFaceCacheInventory:

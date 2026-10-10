@@ -15,7 +15,6 @@ from mlxctl.infrastructure.setup_port import (
     SetupOperationPort,
 )
 
-
 GIB = 1024**3
 
 

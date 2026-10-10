@@ -5,7 +5,6 @@ from mlxctl.infrastructure.model_profiles import (
     ModelProfileDefinitionError,
 )
 
-
 REPOSITORY = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
 REVISION = "70a3aa32c7feef511182bf16aa332f37e8d82014"
 

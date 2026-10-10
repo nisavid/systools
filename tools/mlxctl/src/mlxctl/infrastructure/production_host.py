@@ -34,13 +34,13 @@ from mlxctl.infrastructure.client_integrations import (
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.gateway_credential import GatewayCredential
 from mlxctl.infrastructure.launchd import LaunchdAdapter
+from mlxctl.infrastructure.model_profiles import ModelProfileCatalogue
 from mlxctl.infrastructure.model_supply import (
     ModelInstallation,
     ModelProvenance,
     ModelRevision,
     ModelSupply,
 )
-from mlxctl.infrastructure.model_profiles import ModelProfileCatalogue
 from mlxctl.infrastructure.operation_ports import ClientOperationPort
 from mlxctl.infrastructure.paths_v1 import MlxctlPaths
 from mlxctl.infrastructure.state_store import OperationalStateStore
@@ -410,7 +410,8 @@ def client_request(
     response.raise_for_status()
     value = response.json()
     if not isinstance(value, Mapping):
-        raise RuntimeError("Gateway returned a non-object response")
+        # A malformed remote response is a Gateway failure, not a caller type error.
+        raise RuntimeError("Gateway returned a non-object response")  # noqa: TRY004
     return dict(value)
 
 
@@ -473,7 +474,8 @@ def sampling_profile(value: object) -> SamplingProfile:
             source_revision=value.source_revision,
         )
     if not isinstance(value, Mapping):
-        raise ValueError("sampling profile must be an object")
+        # Sampling input validation consistently reports invalid values.
+        raise ValueError("sampling profile must be an object")  # noqa: TRY004
     return SamplingProfile(
         temperature=optional_float(value.get("temperature")),
         top_p=optional_float(value.get("top_p")),
@@ -624,7 +626,8 @@ def optional_float(value: object) -> float | None:
     if value is None:
         return None
     if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ValueError("value must be numeric")
+        # JSON field validation reports invalid values, including wrong JSON kinds.
+        raise ValueError("value must be numeric")  # noqa: TRY004
     return float(value)
 
 
@@ -640,7 +643,8 @@ def optional_string(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("value must be a string")
+        # JSON field validation reports invalid values, including wrong JSON kinds.
+        raise ValueError("value must be a string")  # noqa: TRY004
     return value
 
 

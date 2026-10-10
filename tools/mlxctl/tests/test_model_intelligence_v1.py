@@ -19,7 +19,6 @@ from mlxctl.infrastructure.model_intelligence import (
     optiq_kv_bytes,
 )
 
-
 GIB = 1024**3
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -513,11 +512,13 @@ class ModelIntelligenceTests(unittest.TestCase):
             commit_sha=SHA,
             files=(RepositoryFile("config.json", 1),),
         )
-        with self.subTest("URL reference"):
-            with self.assertRaisesRegex(ModelIntelligenceError, "not a path or URL"):
-                ModelIntelligence(_Repository(envelope, {}), _Machine()).inspect(
-                    "https://huggingface.co/acme/Model", "main"
-                )
+        with (
+            self.subTest("URL reference"),
+            self.assertRaisesRegex(ModelIntelligenceError, "not a path or URL"),
+        ):
+            ModelIntelligence(_Repository(envelope, {}), _Machine()).inspect(
+                "https://huggingface.co/acme/Model", "main"
+            )
         with self.subTest("traversal inventory"):
             unsafe = RepositoryEnvelope(
                 repo_id="acme/Model",
@@ -571,4 +572,3 @@ class ModelIntelligenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-    (HuggingFaceModelRepository,)

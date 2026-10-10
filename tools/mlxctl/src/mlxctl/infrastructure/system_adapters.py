@@ -9,9 +9,10 @@ import stat
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -22,6 +23,8 @@ from mlxctl.domain.admission import PressureLevel
 from mlxctl.domain.resources import InferenceService
 from mlxctl.infrastructure.model_supply import (
     ModelInstallation as SuppliedModelInstallation,
+)
+from mlxctl.infrastructure.model_supply import (
     VerificationResult,
 )
 from mlxctl.infrastructure.runtime_supply import (
@@ -33,7 +36,6 @@ from mlxctl.infrastructure.supervisor_v1 import (
     PreparedLaunch,
     ProcessIdentity,
 )
-
 
 _SAFE_LOG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CONTENT_ADDRESSED_BLOB_NAME = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")

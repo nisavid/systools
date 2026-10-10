@@ -450,13 +450,15 @@ class GatewayTests(unittest.TestCase):
             resolver, client_factory=lambda: upstream, activity=activity
         )
 
-        with TestClient(app) as client:
-            with client.stream(
+        with (
+            TestClient(app) as client,
+            client.stream(
                 "POST",
                 "/v1/chat/completions",
                 json={"model": "coding", "stream": True, "messages": []},
-            ) as response:
-                body = b"".join(response.iter_bytes())
+            ) as response,
+        ):
+            body = b"".join(response.iter_bytes())
 
         self.assertEqual(body, b"data: one\n\ndata: two\n\ndata: [DONE]\n\n")
         self.assertEqual(response.headers["content-type"], "text/event-stream")
@@ -489,13 +491,15 @@ class GatewayTests(unittest.TestCase):
             resolver, client_factory=lambda: upstream, activity=activity
         )
 
-        with TestClient(app) as client:
-            with client.stream(
+        with (
+            TestClient(app) as client,
+            client.stream(
                 "POST",
                 "/v1/responses",
                 json={"model": "coding", "stream": True, "input": "hello"},
-            ) as response:
-                body = b"".join(response.iter_bytes())
+            ) as response,
+        ):
+            body = b"".join(response.iter_bytes())
 
         self.assertEqual(body, terminal)
         self.assertTrue(stream.closed)
@@ -524,12 +528,14 @@ class GatewayTests(unittest.TestCase):
             resolver, client_factory=lambda: upstream, activity=activity
         )
 
-        with self.assertRaisesRegex(RuntimeError, "upstream close failed"):
-            with TestClient(app) as client:
-                client.post(
-                    "/v1/chat/completions",
-                    json={"model": "coding", "stream": True, "messages": []},
-                )
+        with (
+            self.assertRaisesRegex(RuntimeError, "upstream close failed"),
+            TestClient(app) as client,
+        ):
+            client.post(
+                "/v1/chat/completions",
+                json={"model": "coding", "stream": True, "messages": []},
+            )
 
         self.assertEqual(activity.events, [("begin", "coding"), ("end", "coding")])
         self.assertEqual(activity.active["coding"], 0)

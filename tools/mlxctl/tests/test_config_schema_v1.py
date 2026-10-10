@@ -4,7 +4,6 @@ import tomlkit
 
 from mlxctl.application.config_schema import ConfigSchemaError, validate_config
 
-
 VALID = """
 schema_version = 1
 

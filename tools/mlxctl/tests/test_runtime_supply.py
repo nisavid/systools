@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from hashlib import sha256
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,10 +9,10 @@ from mlxctl.infrastructure.runtime_supply import (
     RuntimeCatalogue,
     RuntimeChangePlanner,
     RuntimeInstallation,
+    RuntimeLaunchBuilder,
     RuntimeManager,
     RuntimeProbeResult,
     SubprocessRuntimeProbe,
-    RuntimeLaunchBuilder,
     TestedRuntimeBundle,
     UnsupportedLaunchOption,
 )
@@ -174,11 +175,9 @@ class RuntimeCatalogueTests(unittest.TestCase):
             },
         )
 
-        self.assertIn(("--max-context", "131072"), tuple(zip(argv, argv[1:])))
-        self.assertIn(("--max-concurrent", "6"), tuple(zip(argv, argv[1:])))
-        self.assertIn(
-            ("--prompt-cache-bytes", str(2 * 1024**3)), tuple(zip(argv, argv[1:]))
-        )
+        self.assertIn(("--max-context", "131072"), tuple(pairwise(argv)))
+        self.assertIn(("--max-concurrent", "6"), tuple(pairwise(argv)))
+        self.assertIn(("--prompt-cache-bytes", str(2 * 1024**3)), tuple(pairwise(argv)))
         for name, value in (
             ("max_context", 0),
             ("max_concurrent", -1),

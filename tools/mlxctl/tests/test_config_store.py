@@ -1,5 +1,5 @@
-import stat
 import shutil
+import stat
 import tempfile
 import threading
 import unittest
@@ -45,13 +45,15 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(outside.read_text(encoding="utf-8"), "preserve")
 
     def test_rejects_a_private_directory_not_owned_by_the_current_user(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            with patch(
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
                 "mlxctl.infrastructure.config_store.os.getuid",
                 return_value=Path(directory).stat().st_uid + 1,
-            ):
-                with self.assertRaises(PermissionError):
-                    ConfigStore(Path(directory) / "config.toml", lambda data: data)
+            ),
+            self.assertRaises(PermissionError),
+        ):
+            ConfigStore(Path(directory) / "config.toml", lambda data: data)
 
     def test_exists_distinguishes_uninitialized_from_saved_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

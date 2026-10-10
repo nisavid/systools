@@ -6,12 +6,13 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 from uuid import uuid4
 
 
@@ -125,8 +126,10 @@ class SubprocessRuntimeProbe:
         version_command = (
             str(python),
             "-c",
-            "import importlib.metadata; "
-            f"print(importlib.metadata.version({definition.package!r}))",
+            (
+                "import importlib.metadata; "
+                f"print(importlib.metadata.version({definition.package!r}))"
+            ),
         )
         version_result = self._execute(version_command)
         if getattr(version_result, "returncode", 1) != 0:

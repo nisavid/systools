@@ -2,36 +2,36 @@ import hashlib
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from mlxctl.application.config_schema import validate_config
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.control_protocol import MAX_FRAME_BYTES
-from mlxctl.infrastructure.model_supply import (
-    CacheDeletionPlan,
-    CacheInventory,
-    CachedRevision,
-    ModelAlias,
-    ModelInstallResult,
-    ModelInstallation,
-    ModelProvenance,
-    ModelRevision,
-    VerificationResult,
-)
 from mlxctl.infrastructure.model_intelligence import (
     EvidenceState,
     RepositoryFile,
     RuntimeCompatibility,
     TrustSignal,
 )
-from mlxctl.infrastructure.state_store import OperationalStateStore
+from mlxctl.infrastructure.model_supply import (
+    CacheDeletionPlan,
+    CachedRevision,
+    CacheInventory,
+    ModelAlias,
+    ModelInstallation,
+    ModelInstallResult,
+    ModelProvenance,
+    ModelRevision,
+    VerificationResult,
+)
 from mlxctl.infrastructure.runtime_supply import (
     RuntimeCatalogue,
     RuntimeInstallation,
 )
+from mlxctl.infrastructure.state_store import OperationalStateStore
 from mlxctl.infrastructure.supply_ports import (
     CacheMovePlan,
     ExactRevisionModelSecurity,
@@ -43,7 +43,6 @@ from mlxctl.infrastructure.supply_ports import (
     inspect_adopted_snapshot,
     verify_adopted_snapshot,
 )
-
 
 _SHA_A = "a" * 40
 _SHA_B = "b" * 40
@@ -762,9 +761,11 @@ route = "coding"
             inspect_adopted_snapshot(snapshot)
         file.unlink()
         file.write_bytes(payload)
-        with patch("mlxctl.infrastructure.supply_ports.os.getuid", return_value=999999):
-            with self.assertRaisesRegex(SupplyPortError, "owned"):
-                inspect_adopted_snapshot(snapshot)
+        with (
+            patch("mlxctl.infrastructure.supply_ports.os.getuid", return_value=999999),
+            self.assertRaisesRegex(SupplyPortError, "owned"),
+        ):
+            inspect_adopted_snapshot(snapshot)
         (snapshot / "unexpected.txt").write_text("not in the exact manifest")
         fingerprint = inspect_adopted_snapshot(snapshot).fingerprint
         with self.assertRaisesRegex(SupplyPortError, "integrity_mismatch"):
@@ -790,9 +791,11 @@ route = "coding"
             {"path": "weights.bin", "size": 4, "lfs_sha256": "not-a-digest"},
             {"path": "weights.bin", "size": 4, "blob_id": "not-a-digest"},
         ):
-            with self.subTest(evidence=evidence):
-                with self.assertRaisesRegex(ModelSecurityPolicyError, "digest"):
-                    verify_adopted_snapshot(snapshot, {"repository_files": [evidence]})
+            with (
+                self.subTest(evidence=evidence),
+                self.assertRaisesRegex(ModelSecurityPolicyError, "digest"),
+            ):
+                verify_adopted_snapshot(snapshot, {"repository_files": [evidence]})
 
     def test_model_adopt_rejects_mlxctl_owned_and_cache_overlapping_paths(
         self,
@@ -1137,4 +1140,3 @@ route = "coding"
 
 if __name__ == "__main__":
     unittest.main()
-    (ExactRevisionModelSecurity,)

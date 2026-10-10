@@ -27,9 +27,9 @@ from mlxctl.infrastructure.composition import (
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.control_client import UnixControlClient
 from mlxctl.infrastructure.daemon_service import DaemonOperationRouter, DaemonService
-from mlxctl.infrastructure.gateway_runtime import GatewayRuntime
 from mlxctl.infrastructure.gateway import GatewayRequestProfile
 from mlxctl.infrastructure.gateway_credential import GatewayCredential
+from mlxctl.infrastructure.gateway_runtime import GatewayRuntime
 from mlxctl.infrastructure.host_integration import (
     LaunchdSupervisorActivator,
     private_socket_ready,
@@ -78,6 +78,7 @@ from mlxctl.infrastructure.setup_port import (
     SetupOperationPort,
 )
 from mlxctl.infrastructure.state_store import OperationalStateStore
+from mlxctl.infrastructure.supervisor_v1 import Supervisor
 from mlxctl.infrastructure.supply_ports import (
     ExactRevisionModelSecurity,
     ModelSupplyPort,
@@ -85,7 +86,6 @@ from mlxctl.infrastructure.supply_ports import (
     inspect_adopted_snapshot,
     verify_adopted_snapshot,
 )
-from mlxctl.infrastructure.supervisor_v1 import Supervisor
 from mlxctl.infrastructure.system_adapters import (
     ConfigDesiredState,
     ExactRuntimeLaunchSupply,
@@ -94,7 +94,6 @@ from mlxctl.infrastructure.system_adapters import (
     MacOSProcessProbe,
     SystemClock,
 )
-
 
 LAUNCHD_LABEL = "io.nisavid.mlxd"
 _DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"

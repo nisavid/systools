@@ -423,7 +423,8 @@ class UnixControlServer:
                     operation_id=request.operation_id,
                 )
             )
-        except Exception:
+        # The protocol boundary must return a sanitized error for any handler failure.
+        except Exception:  # noqa: BLE001
             await send(
                 self._error(
                     "internal_error",

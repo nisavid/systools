@@ -8,7 +8,6 @@ import secrets
 import stat
 from pathlib import Path
 
-
 _MAX_CREDENTIAL_BYTES = 256
 
 
