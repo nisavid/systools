@@ -1,10 +1,10 @@
 import stat
 import tempfile
 import threading
-import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+
+import pytest
 
 from mlxctl.infrastructure.state_store import (
     OperationalStateStore,
@@ -12,17 +12,20 @@ from mlxctl.infrastructure.state_store import (
 )
 
 
-class OperationalStateStoreTests(unittest.TestCase):
-    def test_rejects_a_state_directory_not_owned_by_the_current_user(self) -> None:
+class TestOperationalStateStore:
+    def test_rejects_a_state_directory_not_owned_by_the_current_user(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
-            patch(
-                "mlxctl.infrastructure.state_store.os.getuid",
-                return_value=Path(directory).stat().st_uid + 1,
-            ),
-            self.assertRaises(PermissionError),
+            monkeypatch.context() as patched,
         ):
-            OperationalStateStore(Path(directory) / "state.sqlite3")
+            patched.setattr(
+                "mlxctl.infrastructure.state_store.os.getuid",
+                lambda: Path(directory).stat().st_uid + 1,
+            )
+            with pytest.raises(PermissionError):
+                OperationalStateStore(Path(directory) / "state.sqlite3")
 
     def test_rejects_symlinked_or_non_regular_database_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -32,12 +35,14 @@ class OperationalStateStoreTests(unittest.TestCase):
             database = root / "state.sqlite3"
             database.symlink_to(outside)
 
-            with self.assertRaises(OSError):
+            with pytest.raises(OSError):
                 OperationalStateStore(database)
 
-            self.assertEqual(outside.read_text(encoding="utf-8"), "preserve")
+            assert outside.read_text(encoding="utf-8") == "preserve"
 
-    def test_rejects_known_credential_fields_at_any_depth(self) -> None:
+    def test_rejects_known_credential_fields_at_any_depth(
+        self, subtests: pytest.Subtests
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = OperationalStateStore(Path(directory) / "state.sqlite3")
 
@@ -49,9 +54,10 @@ class OperationalStateStoreTests(unittest.TestCase):
                 "access_token",
             ):
                 with (
-                    self.subTest(key=key),
-                    self.assertRaisesRegex(
-                        SensitiveContentError, "cannot persist credential material"
+                    subtests.test(key=key),
+                    pytest.raises(
+                        SensitiveContentError,
+                        match="cannot persist credential material",
                     ),
                 ):
                     store.put_operation({"id": f"op-{key}", "details": {key: "secret"}})
@@ -78,25 +84,24 @@ class OperationalStateStoreTests(unittest.TestCase):
 
             reopened = OperationalStateStore(path)
 
-            self.assertEqual(
-                reopened.operation("op-1"),
-                {"id": "op-1", "kind": "model.install", "status": "running"},
-            )
-            self.assertEqual(reopened.progress("op-1"), (progress,))
-            self.assertEqual(reopened.events("op-1"), (progress, event))
-            self.assertEqual(
-                reopened.snapshot("service", "code"),
-                {"id": "code", "kind": "service", "state": "ready", "version": 3},
-            )
-            self.assertEqual(reopened.metrics("request"), (metric,))
-            self.assertEqual(
-                tuple(metric), ("duration_ms", "kind", "sequence", "service")
-            )
-            self.assertEqual(
-                reopened.metadata(), {"journal_mode": "wal", "schema_version": 1}
-            )
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            assert reopened.operation("op-1") == {
+                "id": "op-1",
+                "kind": "model.install",
+                "status": "running",
+            }
+            assert reopened.progress("op-1") == (progress,)
+            assert reopened.events("op-1") == (progress, event)
+            assert reopened.snapshot("service", "code") == {
+                "id": "code",
+                "kind": "service",
+                "state": "ready",
+                "version": 3,
+            }
+            assert reopened.metrics("request") == (metric,)
+            assert tuple(metric) == ("duration_ms", "kind", "sequence", "service")
+            assert reopened.metadata() == {"journal_mode": "wal", "schema_version": 1}
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
     def test_concurrent_stores_initialize_and_write_without_losing_records(
         self,
@@ -115,27 +120,24 @@ class OperationalStateStoreTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=8) as pool:
                 tuple(pool.map(write, range(8)))
 
-            self.assertEqual(
-                tuple(
-                    operation["id"]
-                    for operation in OperationalStateStore(path).operations()
-                ),
-                tuple(f"op-{index:02}" for index in range(8)),
-            )
+            assert tuple(
+                operation["id"]
+                for operation in OperationalStateStore(path).operations()
+            ) == tuple(f"op-{index:02}" for index in range(8))
 
     def test_rejects_prompt_or_response_content_at_any_depth(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = OperationalStateStore(Path(directory) / "state.sqlite3")
 
-            with self.assertRaisesRegex(
+            with pytest.raises(
                 SensitiveContentError,
-                "cannot persist inference content at details.prompt",
+                match="cannot persist inference content at details.prompt",
             ):
                 store.put_operation(
                     {"id": "op-secret", "details": {"prompt": "do not store me"}}
                 )
 
-            self.assertIsNone(store.operation("op-secret"))
+            assert store.operation("op-secret") is None
 
     def test_preserves_versioned_snapshots_and_returns_the_latest_by_default(
         self,
@@ -149,15 +151,11 @@ class OperationalStateStoreTests(unittest.TestCase):
                 {"kind": "service", "id": "chat", "state": "ready", "version": 2}
             )
 
-            self.assertEqual(store.snapshot("service", "chat"), second)
-            self.assertEqual(store.snapshot("service", "chat", version=1), first)
-            self.assertEqual(store.snapshots("service"), (first, second))
+            assert store.snapshot("service", "chat") == second
+            assert store.snapshot("service", "chat", version=1) == first
+            assert store.snapshots("service") == (first, second)
 
-            with self.assertRaisesRegex(ValueError, "version 1 is immutable"):
+            with pytest.raises(ValueError, match="version 1 is immutable"):
                 store.put_snapshot(
                     {"kind": "service", "id": "chat", "state": "failed", "version": 1}
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

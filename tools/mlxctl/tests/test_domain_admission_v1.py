@@ -1,4 +1,4 @@
-import unittest
+import pytest
 
 from mlxctl.domain.admission import (
     AdmissionDecision,
@@ -11,27 +11,27 @@ from mlxctl.domain.admission import (
 )
 
 
-class AdmissionPolicyTests(unittest.TestCase):
+class TestAdmissionPolicy:
     def test_likely_fit_starts_and_borderline_requires_confirmation(self) -> None:
-        self.assertEqual(
-            FitAssessment(FitClass.LIKELY, 40, 64, ("measured weights",)).decision,
-            AdmissionDecision.START,
+        assert (
+            FitAssessment(FitClass.LIKELY, 40, 64, ("measured weights",)).decision
+            == AdmissionDecision.START
         )
-        self.assertEqual(
-            FitAssessment(FitClass.BORDERLINE, 58, 64, ("derived KV",)).decision,
-            AdmissionDecision.CONFIRM,
+        assert (
+            FitAssessment(FitClass.BORDERLINE, 58, 64, ("derived KV",)).decision
+            == AdmissionDecision.CONFIRM
         )
-        self.assertEqual(
-            FitAssessment(FitClass.UNKNOWN, None, 64, ("missing config",)).decision,
-            AdmissionDecision.CONFIRM,
+        assert (
+            FitAssessment(FitClass.UNKNOWN, None, 64, ("missing config",)).decision
+            == AdmissionDecision.CONFIRM
         )
 
     def test_no_fit_requires_named_transition_plan(self) -> None:
         fit = FitAssessment(FitClass.NO_FIT, 80, 64, ("exact model bytes",))
-        self.assertEqual(fit.decision, AdmissionDecision.TRANSITION_PLAN)
-        with self.assertRaisesRegex(ValueError, "named transition"):
+        assert fit.decision == AdmissionDecision.TRANSITION_PLAN
+        with pytest.raises(ValueError, match="named transition"):
             fit.approve_transition(())
-        self.assertEqual(fit.approve_transition(("stop:chat",)), ("stop:chat",))
+        assert fit.approve_transition(("stop:chat",)) == ("stop:chat",)
 
     def test_critical_pressure_sheds_then_stops_lru_idle_unpinned(self) -> None:
         services = (
@@ -42,9 +42,9 @@ class AdmissionPolicyTests(unittest.TestCase):
 
         result = PressurePolicy().evaluate(PressureLevel.CRITICAL, services)
 
-        self.assertEqual(result.actions[0], PressureAction.SHED_NEW_WORK)
-        self.assertEqual(result.stop_services, ("chat",))
-        self.assertNotIn("coding", result.stop_services)
+        assert result.actions[0] == PressureAction.SHED_NEW_WORK
+        assert result.stop_services == ("chat",)
+        assert "coding" not in result.stop_services
 
     def test_only_pinned_or_busy_services_produces_explicit_stop_plan(self) -> None:
         services = (
@@ -54,10 +54,6 @@ class AdmissionPolicyTests(unittest.TestCase):
 
         result = PressurePolicy().evaluate(PressureLevel.CRITICAL, services)
 
-        self.assertEqual(result.stop_services, ())
-        self.assertIn(PressureAction.PRESENT_STOP_PLAN, result.actions)
-        self.assertEqual(result.operator_stop_plan, ("vision", "coding"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result.stop_services == ()
+        assert PressureAction.PRESENT_STOP_PLAN in result.actions
+        assert result.operator_stop_plan == ("vision", "coding")

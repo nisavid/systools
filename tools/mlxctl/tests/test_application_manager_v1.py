@@ -1,4 +1,4 @@
-import unittest
+import pytest
 
 from mlxctl.application.catalogue import build_operation_catalogue
 from mlxctl.application.dispatch import (
@@ -34,28 +34,31 @@ class _Backend:
         )
 
 
-class ApplicationManagerTests(unittest.TestCase):
-    def setUp(self) -> None:
+class TestApplicationManager:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.catalogue = build_operation_catalogue()
         self.activator = _Activator()
         self.dispatcher = OperationDispatcher(self.catalogue, self.activator)
         self.backend = _Backend()
         ApplicationManager(self.catalogue, self.backend).register(self.dispatcher)
 
-    def test_registers_every_cli_and_tui_operation(self) -> None:
+    def test_registers_every_cli_and_tui_operation(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for name, operation in self.catalogue.items():
-            with self.subTest(operation=name):
+            with subtests.test(operation=name):
                 parameters = {"confirmed": True} if operation.confirmation else {}
                 result = self.dispatcher.execute(OperationRequest(name, parameters))
-                self.assertEqual(result.operation, name)
+                assert result.operation == name
 
     def test_confirmation_is_enforced_below_both_interfaces(self) -> None:
-        with self.assertRaises(ApplicationError) as raised:
+        with pytest.raises(ApplicationError) as raised:
             self.dispatcher.execute(
                 OperationRequest("model.cache.evict", {"resource": "cached"})
             )
 
-        self.assertEqual(raised.exception.code, "confirmation_required")
+        assert raised.value.code == "confirmation_required"
 
     def test_preview_resolves_the_backend_plan_without_execution_or_activation(
         self,
@@ -66,11 +69,12 @@ class ApplicationManagerTests(unittest.TestCase):
             OperationRequest("model.cache.evict", {"resource": "cached"})
         )
 
-        self.assertEqual(result.value["state"], "planned")
-        self.assertTrue(result.value["confirmation_required"])
-        self.assertTrue(result.value["requires_supervisor"])
-        self.assertEqual(result.value["plan"][0]["phase"], "plan")
-        self.assertEqual(self.activator.calls, 0)
+        assert result.value["state"] == "planned"
+        assert result.value["confirmation_required"]
+        assert result.value["requires_supervisor"]
+        assert isinstance(result.value["plan"], (list, tuple))
+        assert result.value["plan"][0]["phase"] == "plan"
+        assert self.activator.calls == 0
 
     def test_preview_promotes_exact_plan_identity_for_interface_confirmation(self):
         original = self.backend.prepare
@@ -87,7 +91,7 @@ class ApplicationManagerTests(unittest.TestCase):
 
         result = self.dispatcher.preview(OperationRequest("setup"))
 
-        self.assertEqual(result.value["plan_fingerprint"], "sha256:exact")
+        assert result.value["plan_fingerprint"] == "sha256:exact"
 
     def test_service_start_can_visibly_activate_supervisor(self) -> None:
         self.backend.require.add("service.start")
@@ -96,16 +100,16 @@ class ApplicationManagerTests(unittest.TestCase):
             OperationRequest("service.start", {"resource": "coding"})
         )
 
-        self.assertTrue(result.supervisor_started)
-        self.assertEqual(self.activator.calls, 1)
+        assert result.supervisor_started
+        assert self.activator.calls == 1
 
     def test_local_config_mutation_does_not_start_supervisor(self) -> None:
         result = self.dispatcher.execute(
             OperationRequest("config.restore", {"confirmed": True})
         )
 
-        self.assertFalse(result.supervisor_started)
-        self.assertEqual(self.activator.calls, 0)
+        assert not result.supervisor_started
+        assert self.activator.calls == 0
 
     def test_supervisor_stop_uses_a_running_supervisor_without_starting_one(
         self,
@@ -116,25 +120,21 @@ class ApplicationManagerTests(unittest.TestCase):
             OperationRequest("supervisor.stop", {"confirmed": True})
         )
 
-        self.assertFalse(result.supervisor_started)
-        self.assertEqual(self.activator.calls, 0)
-        self.assertEqual(result.value["operation"], "supervisor.stop")
+        assert not result.supervisor_started
+        assert self.activator.calls == 0
+        assert result.value["operation"] == "supervisor.stop"
 
     def test_backend_cannot_activate_a_read_only_operation(self) -> None:
         self.backend.require.add("status")
 
-        with self.assertRaises(ApplicationError) as raised:
+        with pytest.raises(ApplicationError) as raised:
             self.dispatcher.execute(OperationRequest("status"))
 
-        self.assertEqual(raised.exception.code, "activation_forbidden")
-        self.assertEqual(self.activator.calls, 0)
+        assert raised.value.code == "activation_forbidden"
+        assert self.activator.calls == 0
 
     def test_backend_result_and_progress_are_normalized(self) -> None:
         result = self.dispatcher.execute(OperationRequest("runtime.available"))
 
-        self.assertEqual(result.value["operation"], "runtime.available")
-        self.assertEqual(result.events[0]["phase"], "plan")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result.value["operation"] == "runtime.available"
+        assert result.events[0]["phase"] == "plan"

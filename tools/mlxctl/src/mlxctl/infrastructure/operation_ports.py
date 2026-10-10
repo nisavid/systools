@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, overload
 
 from mlxctl.application.config_schema import (
     ClientSamplingSettings,
@@ -14,28 +14,50 @@ from mlxctl.application.config_schema import (
 )
 from mlxctl.application.dispatch import ApplicationError
 from mlxctl.infrastructure.client_integrations import (
+    ClientApplyResult,
     ClientConfiguration,
+    ClientRemovalResult,
+    SemanticChange,
+    TestRequest,
+    TestResult,
 )
-from mlxctl.infrastructure.control_client import ControlClientError, UnixControlClient
+from mlxctl.infrastructure.control_client import (
+    ControlClientError,
+    ControlResponse,
+    UnixControlClient,
+)
 from mlxctl.infrastructure.supervisor_v1 import Supervisor
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 
 class ControlClient(Protocol):
     def execute(
         self, operation: str, parameters: Mapping[str, object] | None = None
-    ): ...
+    ) -> ControlResponse: ...
 
-    def cancel(self, operation_id: str): ...
+    def cancel(self, operation_id: str) -> ControlResponse: ...
 
 
 class ClientAdapter(Protocol):
-    def preview(self, configuration: ClientConfiguration): ...
+    def preview(
+        self, configuration: ClientConfiguration
+    ) -> tuple[SemanticChange, ...]: ...
 
-    def apply(self, configuration: ClientConfiguration, *, takeover: bool = False): ...
+    def apply(
+        self, configuration: ClientConfiguration, *, takeover: bool = False
+    ) -> ClientApplyResult: ...
 
-    def remove(self): ...
+    def remove(self) -> ClientRemovalResult: ...
 
-    def test(self, configuration: ClientConfiguration, request, *, profile: str): ...
+    def test(
+        self,
+        configuration: ClientConfiguration,
+        request: TestRequest[TestResult],
+        *,
+        profile: str,
+    ) -> TestResult: ...
 
 
 class RemoteOperationPort:
@@ -169,7 +191,9 @@ class ClientOperationPort:
             self._record(name, None)
             return plain_result
         if operation == "client.inspect":
-            inspect = getattr(adapter, "inspect", None)
+            inspect: Callable[[], Mapping[str, object]] | None = getattr(
+                adapter, "inspect", None
+            )
             if inspect is None:
                 return {"state": "healthy", "next_actions": []}
             return _plain(inspect())
@@ -271,6 +295,14 @@ def _client_settings(
     )
 
 
+@overload
+def _plain(value: DataclassInstance | Mapping[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _plain(value: object) -> object: ...
+
+
 def _plain(value: object) -> object:
     if is_dataclass(value) and not isinstance(value, type):
         return {
@@ -281,5 +313,5 @@ def _plain(value: object) -> object:
     if isinstance(value, (tuple, list, set, frozenset)):
         return [_plain(item) for item in value]
     if hasattr(value, "value"):
-        return value.value  # type: ignore[union-attr]
+        return value.value
     return value

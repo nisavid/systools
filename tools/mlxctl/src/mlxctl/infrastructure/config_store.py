@@ -8,7 +8,7 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -141,7 +141,7 @@ class ConfigStore(Generic[ValidatedConfig]):
         _private_file_exists(self._journal_path)
 
     @contextmanager
-    def _locked(self) -> Iterator[None]:
+    def _locked(self) -> Generator[None, None, None]:
         lock_path = self._path.with_suffix(f"{self._path.suffix}.lock")
         descriptor = _open_private_file(lock_path, os.O_RDWR | os.O_CREAT)
         try:

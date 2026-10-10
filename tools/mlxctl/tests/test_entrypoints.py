@@ -1,12 +1,11 @@
 import shutil
 import subprocess
-import unittest
 
 
-class EntrypointTests(unittest.TestCase):
+class TestEntrypoint:
     def test_installed_cli_script_has_help(self) -> None:
         executable = shutil.which("mlxctl")
-        self.assertIsNotNone(executable)
+        assert executable is not None
         result = subprocess.run(
             [executable, "--help"],
             check=False,
@@ -15,12 +14,12 @@ class EntrypointTests(unittest.TestCase):
             timeout=5,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("usage: mlxctl", result.stdout)
+        assert result.returncode == 0, result.stderr
+        assert "usage: mlxctl" in result.stdout
 
     def test_installed_daemon_script_has_help(self) -> None:
         executable = shutil.which("mlxd")
-        self.assertIsNotNone(executable)
+        assert executable is not None
         result = subprocess.run(
             [executable, "--help"],
             check=False,
@@ -29,14 +28,14 @@ class EntrypointTests(unittest.TestCase):
             timeout=5,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("usage: mlxd", result.stdout)
+        assert result.returncode == 0, result.stderr
+        assert "usage: mlxd" in result.stdout
 
     def test_status_help_describes_the_status_surface_without_a_server_argument(
         self,
     ) -> None:
         executable = shutil.which("mlxctl")
-        self.assertIsNotNone(executable)
+        assert executable is not None
         result = subprocess.run(
             [executable, "status", "--help"],
             check=False,
@@ -45,10 +44,6 @@ class EntrypointTests(unittest.TestCase):
             timeout=5,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Supervisor, Gateway, Inference Services", result.stdout)
-        self.assertNotIn("SERVER", result.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result.returncode == 0, result.stderr
+        assert "Supervisor, Gateway, Inference Services" in result.stdout
+        assert "SERVER" not in result.stdout

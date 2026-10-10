@@ -384,17 +384,40 @@ and process design, see [`docs/architecture.md`](docs/architecture.md).
 
 ## Develop mlxctl
 
-Run checks from `tools/mlxctl/`:
+Install uv 0.13.0, then run checks from `tools/mlxctl/`:
 
 ```sh
-uv run python -m unittest discover -s tests
-uvx ruff check .
-uvx ruff format --check .
-uv build
+sh scripts/check.sh
+sh scripts/check-wheel.sh
 ```
 
-The package uses a `src/` layout and locks its development environment in
-`uv.lock`. Changes should test the public behavior they claim.
+The package uses a `src/` layout. `.python-version` selects Python 3.15.0
+for development; `pyproject.toml` requires uv 0.13.0 and declares the exact
+development tools locked in `uv.lock`: pyrefly 1.3.2, Ruff 0.17.0, pytest
+9.1.1, pytest-asyncio 1.4.0, and Hatchling 1.32.4. These were the stable
+releases observed on October 10, 2026. uv creates the environment and
+downloads the selected Python when needed. Global lint, type, and test
+tools are not used.
+
+`scripts/check.sh` checks types against the Python 3.11 minimum, lints,
+checks formatting, runs native pytest tests, builds the package with the
+locked build tools, and checks whitespace. `scripts/check-wheel.sh`
+installs that wheel and its locked application dependencies in a temporary
+environment and exercises both installed entry points with `--help`.
+GitHub Actions runs these same scripts on Linux and macOS with Python
+3.11 through 3.15. To check another supported interpreter locally, set
+`UV_PYTHON` before running the scripts.
+
+The tests use function-scoped fixtures and event loops. Native pytest
+subtests retain grouped behavioral cases and continue through failures;
+asynchronous cleanup runs before each test's loop closes. Changes should
+test the public behavior they claim.
+
+The controller supports Python 3.11 or newer. Its development interpreter
+does not change the independently locked inference Runtime Installations.
+Source tests and entry-point smoke checks do not qualify Apple-silicon
+installation or live inference; deployment changes still need the scoped
+checks in [`docs/deployment-contract.md`](docs/deployment-contract.md).
 
 ## License
 

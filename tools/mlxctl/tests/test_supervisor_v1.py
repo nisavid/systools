@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import unittest
 from dataclasses import dataclass
+
+import pytest
 
 from mlxctl.domain.admission import PressureLevel
 from mlxctl.domain.resources import (
@@ -12,6 +13,7 @@ from mlxctl.domain.resources import (
 )
 from mlxctl.infrastructure.supervisor_v1 import (
     CapabilityValidationError,
+    ManagedProcess,
     PreparedLaunch,
     ProcessIdentity,
     Supervisor,
@@ -78,17 +80,17 @@ class FakeStateStore:
         self.event_items: list[dict[str, object]] = []
         self.snapshot_items: list[dict[str, object]] = []
 
-    def put_operation(self, item):
-        self.operation_items[str(item["id"])] = dict(item)
-        return item
+    def put_operation(self, operation):
+        self.operation_items[str(operation["id"])] = dict(operation)
+        return operation
 
-    def append_event(self, item):
-        self.event_items.append(dict(item))
-        return {**item, "sequence": len(self.event_items)}
+    def append_event(self, event):
+        self.event_items.append(dict(event))
+        return {**event, "sequence": len(self.event_items)}
 
-    def put_snapshot(self, item):
-        self.snapshot_items.append(dict(item))
-        return item
+    def put_snapshot(self, snapshot):
+        self.snapshot_items.append(dict(snapshot))
+        return snapshot
 
     def snapshots(self, kind=None):
         return tuple(
@@ -150,7 +152,7 @@ class FakeProbe:
         self.ready = True
         self.identities: dict[int, ProcessIdentity] = {}
 
-    def identity(self, process: FakeProcess) -> ProcessIdentity:
+    def identity(self, process: ManagedProcess) -> ProcessIdentity:
         identity = ProcessIdentity(process.pid, f"birth-{process.pid}")
         self.identities[process.pid] = identity
         return identity
@@ -236,7 +238,24 @@ class FakeClock:
         self.now += max(1, int(seconds))
 
 
-class SupervisorTests(unittest.TestCase):
+class TestSupervisor:
+    def test_route_listing_omits_a_service_removed_during_resolution(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services = self.desired.services
+
+        def remove_after_enumeration() -> tuple[InferenceService, ...]:
+            enumerated = services()
+            self.desired.items.pop("coding", None)
+            return enumerated
+
+        monkeypatch.setattr(self.desired, "services", remove_after_enumeration)
+
+        routes = self.supervisor.list_routes()
+
+        assert tuple(route.service for route in routes) == ("memory",)
+        assert self.processes.launched == []
+
     def test_supervisor_activation_policy_starts_only_selected_services(self) -> None:
         self.desired = FakeDesiredState(
             _service("manual"),
@@ -258,11 +277,10 @@ class SupervisorTests(unittest.TestCase):
 
         status = supervisor.start()
 
-        self.assertEqual(
-            {run.service for run in status.runs if run.state is ServiceRunState.READY},
-            {"automatic"},
-        )
-        self.assertEqual(self.gateway.routes["manual"][0], "stopped")
+        assert {
+            run.service for run in status.runs if run.state is ServiceRunState.READY
+        } == {"automatic"}
+        assert self.gateway.routes["manual"][0] == "stopped"
 
     def test_public_gateway_route_is_distinct_from_service_resource_name(self) -> None:
         service = _service("worker", route="coding")
@@ -284,15 +302,17 @@ class SupervisorTests(unittest.TestCase):
         supervisor.start()
         transition = supervisor.start_service("worker")
 
-        self.assertEqual(transition.run.state, ServiceRunState.READY)
-        self.assertIn("coding", self.gateway.routes)
-        self.assertNotIn("worker", self.gateway.routes)
+        assert transition.run.state == ServiceRunState.READY
+        assert "coding" in self.gateway.routes
+        assert "worker" not in self.gateway.routes
         route = supervisor.resolve("coding")
-        self.assertEqual(route.service, "coding")
-        self.assertEqual(route.model, "worker-model")
-        self.assertEqual(route.runtime, "optiq@0.2.18")
+        assert route is not None
+        assert route.service == "coding"
+        assert route.model == "worker-model"
+        assert route.runtime == "optiq@0.2.18"
 
-    def setUp(self) -> None:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.desired = FakeDesiredState(_service("coding"), _service("memory"))
         self.runtime = FakeRuntimeSupply()
         self.store = FakeStateStore()
@@ -316,48 +336,46 @@ class SupervisorTests(unittest.TestCase):
         )
 
     def test_status_is_read_only_and_explicit_start_owns_one_gateway(self) -> None:
-        self.assertEqual(self.supervisor.status().state, "stopped")
-        self.assertEqual(self.gateway.calls, [])
+        assert self.supervisor.status().state == "stopped"
+        assert self.gateway.calls == []
 
         started = self.supervisor.start()
         again = self.supervisor.start()
 
-        self.assertEqual(started.state, "running")
-        self.assertEqual(again.state, "running")
-        self.assertEqual(self.gateway.calls.count("start"), 1)
-        self.assertEqual(
-            self.gateway.routes,
-            {"coding": ("stopped", None), "memory": ("stopped", None)},
-        )
+        assert started.state == "running"
+        assert again.state == "running"
+        assert self.gateway.calls.count("start") == 1
+        assert self.gateway.routes == {
+            "coding": ("stopped", None),
+            "memory": ("stopped", None),
+        }
         operation = next(iter(self.store.operation_items.values()))
-        self.assertEqual(operation["status"], "complete")
-        self.assertEqual(operation["outcome"], "running")
+        assert operation["status"] == "complete"
+        assert operation["outcome"] == "running"
 
     def test_service_start_visibly_activates_and_runs_multiple_named_services(self):
         coding = self.supervisor.start_service("coding")
         memory = self.supervisor.start_service("memory")
 
-        self.assertTrue(coding.supervisor_started)
-        self.assertFalse(memory.supervisor_started)
-        self.assertEqual(coding.run.state, ServiceRunState.READY)
-        self.assertNotEqual(coding.run.run_id, memory.run.run_id)
-        self.assertNotEqual(coding.run.upstream_port, memory.run.upstream_port)
-        self.assertEqual(len(self.processes.launched), 2)
-        self.assertEqual(self.gateway.routes["coding"][0], "ready")
-        self.assertEqual(self.gateway.routes["memory"][0], "ready")
+        assert coding.supervisor_started
+        assert not memory.supervisor_started
+        assert coding.run.state == ServiceRunState.READY
+        assert coding.run.run_id != memory.run.run_id
+        assert coding.run.upstream_port != memory.run.upstream_port
+        assert len(self.processes.launched) == 2
+        assert self.gateway.routes["coding"][0] == "ready"
+        assert self.gateway.routes["memory"][0] == "ready"
 
     def test_capabilities_are_validated_before_process_launch(self) -> None:
         self.runtime.error = CapabilityValidationError("mtp is unavailable")
 
         result = self.supervisor.start_service("coding")
 
-        self.assertEqual(result.run.state, ServiceRunState.REJECTED)
-        self.assertIn("mtp is unavailable", result.run.error or "")
-        self.assertEqual(self.processes.launched, [])
+        assert result.run.state == ServiceRunState.REJECTED
+        assert "mtp is unavailable" in (result.run.error or "")
+        assert self.processes.launched == []
 
-        with self.assertRaisesRegex(
-            CapabilityValidationError, "exact capabilities: mtp"
-        ):
+        with pytest.raises(CapabilityValidationError, match="exact capabilities: mtp"):
             PreparedLaunch(
                 argv=("/runtime/bin/server",),
                 required_capabilities=frozenset({"mtp"}),
@@ -370,25 +388,24 @@ class SupervisorTests(unittest.TestCase):
         result = self.supervisor.start_service("coding")
 
         process = next(iter(self.processes.processes.values()))
-        self.assertEqual(result.run.state, ServiceRunState.FAILED)
-        self.assertEqual(process.terminate_calls, 1)
-        self.assertFalse(process.running)
+        assert result.run.state == ServiceRunState.FAILED
+        assert process.terminate_calls == 1
+        assert not process.running
 
     def test_stop_restart_and_supervisor_shutdown_are_bounded_and_journaled(self):
         first = self.supervisor.start_service("coding")
+        assert first.run.pid is not None
         self.processes.processes[first.run.pid].ignores_terminate = True
 
         restarted = self.supervisor.restart_service("coding")
         stopped = self.supervisor.stop()
 
-        self.assertNotEqual(first.run.run_id, restarted.run.run_id)
-        self.assertEqual(
-            self.processes.processes[first.run.pid].kill_calls,
-            1,
-        )
-        self.assertEqual(stopped.state, "stopped")
-        self.assertFalse(self.gateway.running)
-        self.assertIn(("drain", 2), self.gateway.calls)
+        assert first.run.run_id != restarted.run.run_id
+        assert first.run.pid is not None
+        assert self.processes.processes[first.run.pid].kill_calls == 1
+        assert stopped.state == "stopped"
+        assert not self.gateway.running
+        assert ("drain", 2) in self.gateway.calls
 
     def test_supervisor_restart_restores_gateway_admission_for_ready_service(self):
         self.supervisor.start_service("coding")
@@ -396,10 +413,10 @@ class SupervisorTests(unittest.TestCase):
         self.supervisor.restart()
         restarted = self.supervisor.start_service("coding")
 
-        self.assertEqual(restarted.run.state, ServiceRunState.READY)
-        self.assertEqual(
-            self.gateway.effective_route("coding"),
-            ("ready", "http://127.0.0.1:49153"),
+        assert restarted.run.state == ServiceRunState.READY
+        assert self.gateway.effective_route("coding") == (
+            "ready",
+            "http://127.0.0.1:49153",
         )
 
     def test_service_drain_rejects_new_route_work_and_waits_for_idle(self) -> None:
@@ -413,35 +430,28 @@ class SupervisorTests(unittest.TestCase):
             self.gateway.busy_services.discard(route)
             original_sleep(seconds)
 
-        self.clock.sleep = become_idle  # type: ignore[method-assign]
+        self.clock.sleep = become_idle
         drained = supervisor.drain_service("coding")
 
-        self.assertEqual(drained.state, "drained")
-        self.assertEqual(drained.route, route)
-        self.assertEqual(self.gateway.routes[route][0], "unavailable")
+        assert drained.state == "drained"
+        assert drained.route == route
+        assert self.gateway.routes[route][0] == "unavailable"
 
     def test_service_drain_times_out_without_stopping_a_busy_process(self) -> None:
         supervisor = self.supervisor
         transition = supervisor.start_service("coding")
         self.gateway.busy_services.add("coding")
 
-        with self.assertRaisesRegex(RuntimeError, "active request"):
+        with pytest.raises(RuntimeError, match="active request"):
             supervisor.drain_service("coding")
 
-        self.assertEqual(
-            supervisor.service_status("coding").state, ServiceRunState.READY
-        )
-        self.assertEqual(
-            self.processes.processes[transition.run.pid].terminate_calls,
-            0,  # type: ignore[index]
-        )
-        self.assertTrue(self.store.operation_items)
+        assert supervisor.service_status("coding").state == ServiceRunState.READY
+        assert transition.run.pid is not None
+        assert self.processes.processes[transition.run.pid].terminate_calls == 0
+        assert self.store.operation_items
         operation_ids = set(self.store.operation_items)
-        self.assertTrue(
-            all(
-                event["operation_id"] in operation_ids
-                for event in self.store.event_items
-            )
+        assert all(
+            event["operation_id"] in operation_ids for event in self.store.event_items
         )
 
     def test_service_removal_drops_the_stopped_gateway_route(self) -> None:
@@ -449,20 +459,22 @@ class SupervisorTests(unittest.TestCase):
 
         removed = self.supervisor.remove_service("coding")
 
-        self.assertEqual(removed.run.state, ServiceRunState.STOPPED)
-        self.assertNotIn("coding", self.gateway.routes)
+        assert removed.run.state == ServiceRunState.STOPPED
+        assert "coding" not in self.gateway.routes
 
     def test_one_service_failure_does_not_stop_another(self) -> None:
         coding = self.supervisor.start_service("coding")
         memory = self.supervisor.start_service("memory")
+        assert coding.run.pid is not None
         self.processes.processes[coding.run.pid].running = False
 
         failed = self.supervisor.service_status("coding")
         healthy = self.supervisor.service_status("memory")
 
-        self.assertEqual(failed.state, ServiceRunState.FAILED)
-        self.assertEqual(healthy.state, ServiceRunState.READY)
-        self.assertTrue(self.processes.processes[memory.run.pid].running)
+        assert failed.state == ServiceRunState.FAILED
+        assert healthy.state == ServiceRunState.READY
+        assert memory.run.pid is not None
+        assert self.processes.processes[memory.run.pid].running
 
     def test_recovery_attaches_only_when_persisted_process_identity_matches(self):
         identity = ProcessIdentity(1234, "birth-1234")
@@ -485,15 +497,15 @@ class SupervisorTests(unittest.TestCase):
 
         recovered = self.supervisor.start().runs[0]
 
-        self.assertEqual(recovered.run_id, "run-old")
-        self.assertEqual(self.processes.attached, [1234])
+        assert recovered.run_id == "run-old"
+        assert self.processes.attached == [1234]
 
         self.processes.attached.clear()
         self.probe.identities[1234] = ProcessIdentity(1234, "reused-pid")
         other = self._new_supervisor()
         other.start()
-        self.assertEqual(self.processes.attached, [])
-        self.assertTrue(process.running)
+        assert self.processes.attached == []
+        assert process.running
 
     def test_critical_pressure_stops_lru_idle_unpinned_but_never_pinned_or_busy(self):
         self.desired.items["pinned"] = _service("pinned", pinned=True)
@@ -506,17 +518,13 @@ class SupervisorTests(unittest.TestCase):
 
         result = self.supervisor.reconcile_pressure()
 
-        self.assertEqual(result.stopped_services, ("coding",))
-        self.assertEqual(result.operator_stop_plan, ("memory", "pinned"))
-        self.assertEqual(
-            self.supervisor.service_status("pinned").state, ServiceRunState.READY
-        )
-        self.assertEqual(
-            self.supervisor.service_status("memory").state, ServiceRunState.READY
-        )
-        self.assertIn(("shed", True), self.gateway.calls)
+        assert result.stopped_services == ("coding",)
+        assert result.operator_stop_plan == ("memory", "pinned")
+        assert self.supervisor.service_status("pinned").state == ServiceRunState.READY
+        assert self.supervisor.service_status("memory").state == ServiceRunState.READY
+        assert ("shed", True) in self.gateway.calls
         blocked = self.supervisor.start_service("coding")
-        self.assertEqual(blocked.run.state, ServiceRunState.REJECTED)
+        assert blocked.run.state == ServiceRunState.REJECTED
 
     def test_gateway_route_lookup_never_starts_stopped_service(self) -> None:
         self.supervisor.start()
@@ -524,21 +532,22 @@ class SupervisorTests(unittest.TestCase):
 
         route = self.supervisor.resolve("coding")
 
-        self.assertEqual(route.state, "stopped")
-        self.assertEqual(len(self.processes.launched), before)
+        assert route is not None
+        assert route.state == "stopped"
+        assert len(self.processes.launched) == before
 
     def test_maintenance_detects_exit_and_registers_new_desired_route(self) -> None:
         transition = self.supervisor.start_service("coding")
-        self.processes.processes[transition.run.pid].running = False  # type: ignore[index]
+        assert transition.run.pid is not None
+        assert transition.run.pid is not None
+        self.processes.processes[transition.run.pid].running = False
         self.desired.items["new"] = _service("new")
 
         outcome = self.supervisor.maintain()
 
-        self.assertEqual(
-            self.supervisor.service_status("coding").state, ServiceRunState.FAILED
-        )
-        self.assertEqual(self.gateway.routes["new"], ("stopped", None))
-        self.assertEqual(outcome.pressure, PressureLevel.NORMAL)
+        assert self.supervisor.service_status("coding").state == ServiceRunState.FAILED
+        assert self.gateway.routes["new"] == ("stopped", None)
+        assert outcome.pressure == PressureLevel.NORMAL
 
     def test_maintenance_restarts_a_running_service_after_desired_edit(self) -> None:
         first = self.supervisor.start_service("coding")
@@ -547,11 +556,11 @@ class SupervisorTests(unittest.TestCase):
         outcome = self.supervisor.maintain()
 
         current = self.supervisor.service_status("coding")
-        self.assertEqual(current.state, ServiceRunState.READY)
-        self.assertNotEqual(current.run_id, first.run.run_id)
-        self.assertNotIn("coding", self.gateway.routes)
-        self.assertEqual(self.gateway.routes["coding-v2"][0], "ready")
-        self.assertEqual(outcome.restarted_services, ("coding",))
+        assert current.state == ServiceRunState.READY
+        assert current.run_id != first.run.run_id
+        assert "coding" not in self.gateway.routes
+        assert self.gateway.routes["coding-v2"][0] == "ready"
+        assert outcome.restarted_services == ("coding",)
 
     def test_maintenance_restarts_idle_run_after_exact_launch_target_update(
         self,
@@ -562,9 +571,9 @@ class SupervisorTests(unittest.TestCase):
         outcome = self.supervisor.maintain()
 
         current = self.supervisor.service_status("coding")
-        self.assertEqual(current.state, ServiceRunState.READY)
-        self.assertNotEqual(current.run_id, first.run.run_id)
-        self.assertEqual(outcome.restarted_services, ("coding",))
+        assert current.state == ServiceRunState.READY
+        assert current.run_id != first.run.run_id
+        assert outcome.restarted_services == ("coding",)
 
     def _new_supervisor(self):
         candidate = Supervisor(
@@ -578,7 +587,3 @@ class SupervisorTests(unittest.TestCase):
             clock=self.clock,
         )
         return candidate
-
-
-if __name__ == "__main__":
-    unittest.main()

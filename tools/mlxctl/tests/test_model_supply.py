@@ -1,9 +1,10 @@
+import sys
 import tempfile
-import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+
+import pytest
 
 from mlxctl.infrastructure.model_supply import (
     CachedRevision,
@@ -101,7 +102,7 @@ class FakeHub:
         return self.deletion
 
 
-class ModelDiscoveryTests(unittest.TestCase):
+class TestModelDiscovery:
     def test_curated_search_defaults_to_mlx_community_without_claiming_compatibility(
         self,
     ) -> None:
@@ -111,10 +112,10 @@ class ModelDiscoveryTests(unittest.TestCase):
 
             candidates = supply.search("Qwen", mode="curated", limit=8)
 
-            self.assertEqual(hub.search_calls, [("Qwen", "mlx-community", 8)])
-            self.assertEqual(candidates[0].repo_id, "mlx-community/Qwen-test")
-            self.assertEqual(candidates[0].evidence, "hub-declared")
-            self.assertIsNone(candidates[0].compatibility)
+            assert hub.search_calls == [("Qwen", "mlx-community", 8)]
+            assert candidates[0].repo_id == "mlx-community/Qwen-test"
+            assert candidates[0].evidence == "hub-declared"
+            assert candidates[0].compatibility is None
 
     def test_broad_and_local_search_have_distinct_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -124,14 +125,14 @@ class ModelDiscoveryTests(unittest.TestCase):
             broad = supply.search("Qwen", mode="broad")
             local = supply.search("local", mode="local")
 
-            self.assertEqual(hub.search_calls[-1], ("Qwen", None, 20))
-            self.assertEqual(broad[0].source, "hub")
-            self.assertEqual(local[0].source, "cache")
-            self.assertEqual(local[0].reported_sha, "abc123")
-            self.assertEqual(local[0].evidence, "local-observed")
+            assert hub.search_calls[-1] == ("Qwen", None, 20)
+            assert broad[0].source == "hub"
+            assert local[0].source == "cache"
+            assert local[0].reported_sha == "abc123"
+            assert local[0].evidence == "local-observed"
 
 
-class ModelInstallTests(unittest.TestCase):
+class TestModelInstall:
     def test_install_resolves_a_mutable_reference_then_pins_exact_snapshot(
         self,
     ) -> None:
@@ -146,25 +147,17 @@ class ModelInstallTests(unittest.TestCase):
                 revision="main",
             )
 
-            self.assertEqual(
-                hub.resolve_calls,
-                [("mlx-community/Qwen-test", "main", False)],
-            )
-            self.assertEqual(
-                hub.download_calls,
-                [("mlx-community/Qwen-test", "a" * 40, False, False)],
-            )
-            self.assertEqual(result.revision.commit_sha, "a" * 40)
-            self.assertTrue(result.cached.complete)
-            self.assertEqual(result.installation.revision, result.revision)
-            self.assertEqual(
-                result.installation.cached_revision_id, result.cached.revision_id
-            )
-            self.assertEqual(result.alias.name, "coding")
-            self.assertEqual(
-                result.alias.installation_id, result.installation.installation_id
-            )
-            self.assertNotEqual(result.installation, result.cached)
+            assert hub.resolve_calls == [("mlx-community/Qwen-test", "main", False)]
+            assert hub.download_calls == [
+                ("mlx-community/Qwen-test", "a" * 40, False, False)
+            ]
+            assert result.revision.commit_sha == "a" * 40
+            assert result.cached.complete
+            assert result.installation.revision == result.revision
+            assert result.installation.cached_revision_id == result.cached.revision_id
+            assert result.alias.name == "coding"
+            assert result.alias.installation_id == result.installation.installation_id
+            assert result.installation != result.cached
 
     def test_offline_install_labels_exact_local_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -176,16 +169,13 @@ class ModelInstallTests(unittest.TestCase):
                 offline=True,
             )
 
-            self.assertEqual(
-                hub.resolve_calls[-1],
-                (
-                    "mlx-community/Qwen-test",
-                    "a" * 40,
-                    True,
-                ),
+            assert hub.resolve_calls[-1] == (
+                "mlx-community/Qwen-test",
+                "a" * 40,
+                True,
             )
-            self.assertEqual(result.revision.evidence, "offline-cached")
-            self.assertEqual(result.cached.evidence, "offline-cached")
+            assert result.revision.evidence == "offline-cached"
+            assert result.cached.evidence == "offline-cached"
 
     def test_verify_and_repair_use_the_exact_revision(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -205,15 +195,17 @@ class ModelInstallTests(unittest.TestCase):
             before = supply.verify(installed)
             repaired = supply.repair(installed)
 
-            self.assertEqual(before.status, "incomplete")
-            self.assertEqual(
-                hub.download_calls[-1],
-                ("mlx-community/Qwen-test", "a" * 40, False, False),
+            assert before.status == "incomplete"
+            assert hub.download_calls[-1] == (
+                "mlx-community/Qwen-test",
+                "a" * 40,
+                False,
+                False,
             )
-            self.assertEqual(repaired.status, "incomplete")
+            assert repaired.status == "incomplete"
 
 
-class ModelCacheTests(unittest.TestCase):
+class TestModelCache:
     def test_cache_deletion_is_blocked_while_an_installation_references_revision(
         self,
     ) -> None:
@@ -230,26 +222,28 @@ class ModelCacheTests(unittest.TestCase):
                 (installation.revision.commit_sha,), installations=(installation,)
             )
 
-            self.assertFalse(plan.allowed)
-            self.assertEqual(plan.blocked_by, (installation.installation_id,))
-            self.assertEqual(hub.deletion_calls, [])
+            assert not plan.allowed
+            assert plan.blocked_by == (installation.installation_id,)
+            assert hub.deletion_calls == []
 
     def test_official_cache_deletion_plan_requires_explicit_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             hub = FakeHub(Path(directory))
             plan = ModelSupply(hub).plan_cache_deletion(("abc123",))
 
-            self.assertTrue(plan.allowed)
-            self.assertEqual(plan.expected_freed_size, 900)
-            self.assertEqual(hub.deletion_calls, [("abc123",)])
-            with self.assertRaisesRegex(PermissionError, "explicit approval"):
+            assert plan.allowed
+            assert plan.expected_freed_size == 900
+            assert hub.deletion_calls == [("abc123",)]
+            with pytest.raises(PermissionError, match="explicit approval"):
                 plan.execute()
             plan.execute(approved=True)
-            self.assertTrue(hub.deletion.executed)
+            assert hub.deletion.executed
 
 
-class HuggingFaceHubClientTests(unittest.TestCase):
-    def test_official_api_objects_are_normalized_behind_the_adapter(self) -> None:
+class TestHuggingFaceHubClient:
+    def test_official_api_objects_are_normalized_behind_the_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             snapshot = Path(directory) / ("b" * 40)
             snapshot.mkdir()
@@ -298,11 +292,14 @@ class HuggingFaceHubClientTests(unittest.TestCase):
                 ),
             )
             module = ModuleType("huggingface_hub")
-            module.HfApi = FakeApi
-            module.snapshot_download = snapshot_download
-            module.scan_cache_dir = lambda: cache_info
+            module.__dict__.update(
+                HfApi=FakeApi,
+                snapshot_download=snapshot_download,
+                scan_cache_dir=lambda: cache_info,
+            )
 
-            with patch.dict("sys.modules", {"huggingface_hub": module}):
+            with monkeypatch.context() as patch:
+                patch.setitem(sys.modules, "huggingface_hub", module)
                 client = HuggingFaceHubClient()
                 records = client.search_models("Qwen", author="mlx-community", limit=3)
                 resolved = client.resolve_revision(
@@ -311,14 +308,10 @@ class HuggingFaceHubClientTests(unittest.TestCase):
                 inventory = client.cache_inventory()
                 plan = client.plan_cache_deletion(("b" * 40,))
 
-            self.assertEqual(records[0].repo_id, "mlx-community/Qwen")
-            self.assertEqual(records[0].gated, "manual")
-            self.assertEqual(resolved, "b" * 40)
-            self.assertEqual(inventory.revisions[0].size_on_disk, 321)
-            self.assertIsNone(inventory.revisions[0].complete)
-            self.assertIs(plan, deletion)
-            self.assertIn(("delete_revisions", ("b" * 40,)), calls)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert records[0].repo_id == "mlx-community/Qwen"
+            assert records[0].gated == "manual"
+            assert resolved == "b" * 40
+            assert inventory.revisions[0].size_on_disk == 321
+            assert inventory.revisions[0].complete is None
+            assert plan is deletion
+            assert ("delete_revisions", ("b" * 40,)) in calls

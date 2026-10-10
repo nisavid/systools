@@ -3,15 +3,34 @@ from __future__ import annotations
 import os
 import plistlib
 import stat
-import tempfile
-import unittest
+from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import TypedDict
+
+import pytest
 
 from mlxctl.infrastructure.launchd import (
     CommandResult,
+    CommandRunner,
     LaunchdAdapter,
     LaunchdConfigurationError,
 )
+
+
+class LaunchdArguments(TypedDict):
+    label: str
+    program_arguments: Sequence[str]
+    plist_path: Path | str
+    runner: CommandRunner
+    uid: int
+
+
+class LaunchdOverrides(TypedDict, total=False):
+    label: str
+    program_arguments: Sequence[str]
+    plist_path: Path | str
 
 
 class FakeRunner:
@@ -26,10 +45,10 @@ class FakeRunner:
         return CommandResult(0, "", "")
 
 
-class LaunchdAdapterTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+class TestLaunchdAdapter:
+    @pytest.fixture(autouse=True)
+    def _setup(self, cleanup: ExitStack) -> None:
+        self.root = Path(cleanup.enter_context(TemporaryDirectory()))
         self.plist = self.root / "Library" / "LaunchAgents" / "com.nisavid.mlxd.plist"
         self.runner = FakeRunner()
         self.adapter = LaunchdAdapter(
@@ -40,35 +59,31 @@ class LaunchdAdapterTests(unittest.TestCase):
             uid=os.getuid(),
         )
 
-    def tearDown(self) -> None:
-        self.temporary.cleanup()
-
     def test_preview_is_an_inactive_per_user_launch_agent(self) -> None:
         preview = plistlib.loads(self.adapter.preview())
 
-        self.assertEqual(preview["Label"], "com.nisavid.mlxd")
-        self.assertEqual(
-            preview["ProgramArguments"],
-            ["/Users/example/.local/bin/mlxd", "serve"],
-        )
-        self.assertFalse(preview["RunAtLoad"])
-        self.assertFalse(preview["KeepAlive"])
-        self.assertEqual(preview["ProcessType"], "Background")
-        self.assertNotIn("Program", preview)
-        self.assertNotIn("ShellPath", preview)
+        assert preview["Label"] == "com.nisavid.mlxd"
+        assert preview["ProgramArguments"] == [
+            "/Users/example/.local/bin/mlxd",
+            "serve",
+        ]
+        assert not preview["RunAtLoad"]
+        assert not preview["KeepAlive"]
+        assert preview["ProcessType"] == "Background"
+        assert "Program" not in preview
+        assert "ShellPath" not in preview
 
     def test_register_writes_private_owned_plist_and_does_not_start_service(self):
         status = self.adapter.register()
 
-        self.assertTrue(status.registered)
-        self.assertFalse(status.running)
-        self.assertEqual(
-            self.runner.calls,
-            [("launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist))],
-        )
-        self.assertEqual(stat.S_IMODE(self.plist.stat().st_mode), 0o600)
-        self.assertEqual(self.plist.stat().st_uid, os.getuid())
-        self.assertEqual(plistlib.loads(self.plist.read_bytes())["RunAtLoad"], False)
+        assert status.registered
+        assert not status.running
+        assert self.runner.calls == [
+            ("launchctl", "bootstrap", f"gui/{os.getuid()}", str(self.plist))
+        ]
+        assert stat.S_IMODE(self.plist.stat().st_mode) == 0o600
+        assert self.plist.stat().st_uid == os.getuid()
+        assert plistlib.loads(self.plist.read_bytes())["RunAtLoad"] == False
 
     def test_kickstart_bootout_and_status_use_exact_safe_targets(self) -> None:
         self.adapter.kickstart()
@@ -77,29 +92,28 @@ class LaunchdAdapterTests(unittest.TestCase):
         status = self.adapter.status()
 
         target = f"gui/{os.getuid()}/com.nisavid.mlxd"
-        self.assertEqual(
-            self.runner.calls,
-            [
-                ("launchctl", "kickstart", target),
-                ("launchctl", "bootout", target),
-                ("launchctl", "print", target),
-            ],
-        )
-        self.assertTrue(status.registered)
-        self.assertTrue(status.running)
-        self.assertEqual(status.pid, 123)
+        assert self.runner.calls == [
+            ("launchctl", "kickstart", target),
+            ("launchctl", "bootout", target),
+            ("launchctl", "print", target),
+        ]
+        assert status.registered
+        assert status.running
+        assert status.pid == 123
 
     def test_unregistered_status_is_observed_without_mutation(self) -> None:
         self.runner.results.append(CommandResult(113, "", "Could not find service"))
 
         status = self.adapter.status()
 
-        self.assertFalse(status.registered)
-        self.assertFalse(status.running)
-        self.assertEqual(len(self.runner.calls), 1)
+        assert not status.registered
+        assert not status.running
+        assert len(self.runner.calls) == 1
 
-    def test_rejects_unsafe_label_argv_and_plist_targets(self) -> None:
-        cases = (
+    def test_rejects_unsafe_label_argv_and_plist_targets(
+        self, subtests: pytest.Subtests
+    ) -> None:
+        cases: tuple[LaunchdOverrides, ...] = (
             {"label": "bad/label"},
             {"label": "mlxd"},
             {"program_arguments": ("mlxd",)},
@@ -107,7 +121,7 @@ class LaunchdAdapterTests(unittest.TestCase):
             {"plist_path": self.root / "wrong-name.plist"},
             {"plist_path": Path("com.nisavid.mlxd.plist")},
         )
-        defaults = {
+        defaults: LaunchdArguments = {
             "label": "com.nisavid.mlxd",
             "program_arguments": ("/usr/local/bin/mlxd",),
             "plist_path": self.plist,
@@ -116,19 +130,20 @@ class LaunchdAdapterTests(unittest.TestCase):
         }
         for overrides in cases:
             with (
-                self.subTest(overrides=overrides),
-                self.assertRaises(LaunchdConfigurationError),
+                subtests.test(overrides=overrides),
+                pytest.raises(LaunchdConfigurationError),
             ):
-                LaunchdAdapter(**{**defaults, **overrides})
+                arguments: LaunchdArguments = {**defaults, **overrides}
+                LaunchdAdapter(**arguments)
 
     def test_refuses_to_replace_a_symlink_or_foreign_owned_file(self) -> None:
         self.plist.parent.mkdir(parents=True)
         target = self.root / "elsewhere"
         target.write_text("do not replace", encoding="utf-8")
         self.plist.symlink_to(target)
-        with self.assertRaisesRegex(LaunchdConfigurationError, "symbolic link"):
+        with pytest.raises(LaunchdConfigurationError, match="symbolic link"):
             self.adapter.install()
-        self.assertEqual(target.read_text(encoding="utf-8"), "do not replace")
+        assert target.read_text(encoding="utf-8") == "do not replace"
 
     def test_refuses_a_symlinked_launch_agents_directory(self) -> None:
         real_directory = self.root / "real-agents"
@@ -136,9 +151,5 @@ class LaunchdAdapterTests(unittest.TestCase):
         self.plist.parent.parent.mkdir(parents=True)
         self.plist.parent.symlink_to(real_directory)
 
-        with self.assertRaisesRegex(LaunchdConfigurationError, "symbolic link"):
+        with pytest.raises(LaunchdConfigurationError, match="symbolic link"):
             self.adapter.install()
-
-
-if __name__ == "__main__":
-    unittest.main()

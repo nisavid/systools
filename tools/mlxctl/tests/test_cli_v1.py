@@ -1,6 +1,6 @@
 import json
-import unittest
 
+import pytest
 from typer.testing import CliRunner
 
 from mlxctl.application.catalogue import build_operation_catalogue
@@ -41,8 +41,9 @@ class _Dispatcher:
         )
 
 
-class CliV1Tests(unittest.TestCase):
-    def setUp(self) -> None:
+class TestCliV1:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.dispatcher = _Dispatcher()
         self.tui_calls = 0
 
@@ -60,37 +61,39 @@ class CliV1Tests(unittest.TestCase):
     def test_root_help_exposes_resource_groups_and_guided_setup(self) -> None:
         result = self.runner.invoke(self.app, ["--help"])
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("setup", result.output)
-        self.assertIn("remove", result.output)
-        self.assertIn("supervisor", result.output)
-        self.assertIn("runtime", result.output)
-        self.assertIn("model", result.output)
-        self.assertIn("service", result.output)
+        assert result.exit_code == 0, result.output
+        assert "setup" in result.output
+        assert "remove" in result.output
+        assert "supervisor" in result.output
+        assert "runtime" in result.output
+        assert "model" in result.output
+        assert "service" in result.output
 
-    def test_every_catalogue_operation_has_a_cli_help_surface(self) -> None:
+    def test_every_catalogue_operation_has_a_cli_help_surface(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for name in build_operation_catalogue():
-            with self.subTest(operation=name):
+            with subtests.test(operation=name):
                 result = self.runner.invoke(self.app, [*name.split("."), "--help"])
-                self.assertEqual(result.exit_code, 0, result.output)
+                assert result.exit_code == 0, result.output
 
     def test_status_help_is_machine_overview_not_ambiguous_server_argument(
         self,
     ) -> None:
         result = self.runner.invoke(self.app, ["status", "--help"])
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertNotIn("SERVER", result.output)
-        self.assertIn("Supervisor", result.output)
-        self.assertIn("Gateway", result.output)
+        assert result.exit_code == 0, result.output
+        assert "SERVER" not in result.output
+        assert "Supervisor" in result.output
+        assert "Gateway" in result.output
 
     def test_nested_resource_command_dispatches_named_resource(self) -> None:
         result = self.runner.invoke(self.app, ["service", "stop", "coding", "--json"])
 
-        self.assertEqual(result.exit_code, 0, result.output)
+        assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        self.assertEqual(payload["operation"], "service.stop")
-        self.assertEqual(payload["parameters"]["resource"], "coding")
+        assert payload["operation"] == "service.stop"
+        assert payload["parameters"]["resource"] == "coding"
 
     def test_service_edit_can_explicitly_clear_a_boolean(self) -> None:
         result = self.runner.invoke(
@@ -98,16 +101,16 @@ class CliV1Tests(unittest.TestCase):
             ["service", "edit", "coding", "--no-pinned", "--yes", "--json"],
         )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIs(self.dispatcher.requests[-1].parameters["pinned"], False)
+        assert result.exit_code == 0, result.output
+        assert self.dispatcher.requests[-1].parameters["pinned"] is False
 
     def test_help_and_dispatch_expose_operation_specific_values(self) -> None:
         help_result = self.runner.invoke(self.app, ["runtime", "install", "--help"])
-        self.assertEqual(help_result.exit_code, 0, help_result.output)
-        self.assertIn("RUNTIME", help_result.output)
-        self.assertIn("mlx_lm", help_result.output)
-        self.assertIn("mlx_vlm", help_result.output)
-        self.assertIn("optiq", help_result.output)
+        assert help_result.exit_code == 0, help_result.output
+        assert "RUNTIME" in help_result.output
+        assert "mlx_lm" in help_result.output
+        assert "mlx_vlm" in help_result.output
+        assert "optiq" in help_result.output
 
         result = self.runner.invoke(
             self.app,
@@ -122,11 +125,12 @@ class CliV1Tests(unittest.TestCase):
                 "--json",
             ],
         )
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(
-            dict(self.dispatcher.requests[-1].parameters),
-            {"query": "Qwen", "source": "curated", "limit": 8},
-        )
+        assert result.exit_code == 0, result.output
+        assert dict(self.dispatcher.requests[-1].parameters) == {
+            "query": "Qwen",
+            "source": "curated",
+            "limit": 8,
+        }
 
     def test_model_cache_is_a_real_nested_command_group(self) -> None:
         result = self.runner.invoke(
@@ -134,9 +138,9 @@ class CliV1Tests(unittest.TestCase):
             ["model", "cache", "evict", "qwen-exact", "--yes", "--json"],
         )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(self.dispatcher.requests[-1].name, "model.cache.evict")
-        self.assertTrue(self.dispatcher.requests[-1].parameters["confirmed"])
+        assert result.exit_code == 0, result.output
+        assert self.dispatcher.requests[-1].name == "model.cache.evict"
+        assert self.dispatcher.requests[-1].parameters["confirmed"]
 
     def test_destructive_command_requires_prompt_or_explicit_yes(self) -> None:
         denied = self.runner.invoke(
@@ -144,8 +148,8 @@ class CliV1Tests(unittest.TestCase):
             ["model", "cache", "evict", "qwen-exact", "--json"],
         )
 
-        self.assertNotEqual(denied.exit_code, 0)
-        self.assertFalse(self.dispatcher.requests)
+        assert denied.exit_code != 0
+        assert not self.dispatcher.requests
 
     def test_interactive_mutation_renders_backend_plan_before_confirmation(
         self,
@@ -156,18 +160,18 @@ class CliV1Tests(unittest.TestCase):
             input="n\n",
         )
 
-        self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("Resolved mutation plan", result.output)
-        self.assertEqual(self.dispatcher.previews[-1].name, "service.remove")
-        self.assertFalse(self.dispatcher.requests)
+        assert result.exit_code != 0
+        assert "Resolved mutation plan" in result.output
+        assert self.dispatcher.previews[-1].name == "service.remove"
+        assert not self.dispatcher.requests
 
     def test_setup_confirmation_carries_the_reviewed_plan_fingerprint(self) -> None:
         result = self.runner.invoke(self.app, ["setup"], input="y\n")
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(
-            self.dispatcher.requests[-1].parameters["plan_fingerprint"],
-            "sha256:exact",
+        assert result.exit_code == 0, result.output
+        assert (
+            self.dispatcher.requests[-1].parameters["plan_fingerprint"]
+            == "sha256:exact"
         )
 
     def test_noninteractive_setup_previews_and_parses_structured_inputs(self) -> None:
@@ -184,35 +188,35 @@ class CliV1Tests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(self.dispatcher.previews[-1].name, "setup")
+        assert result.exit_code == 0, result.output
+        assert self.dispatcher.previews[-1].name == "setup"
         parameters = self.dispatcher.requests[-1].parameters
-        self.assertEqual(parameters["service_options"]["kv_config"], "kv_config.json")
-        self.assertTrue(parameters["service_options"]["mtp"])
-        self.assertEqual(parameters["clients"], ["codex", "hindsight"])
-        self.assertEqual(parameters["plan_fingerprint"], "sha256:exact")
+        assert parameters["service_options"]["kv_config"] == "kv_config.json"
+        assert parameters["service_options"]["mtp"]
+        assert parameters["clients"] == ["codex", "hindsight"]
+        assert parameters["plan_fingerprint"] == "sha256:exact"
 
     def test_setup_help_explains_capacity_choices_and_concurrency(self) -> None:
         result = self.runner.invoke(self.app, ["setup", "--help"])
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("--capacity", result.output)
-        self.assertIn("balanced", result.output)
-        self.assertIn("long-context", result.output)
-        self.assertIn("native-context", result.output)
-        self.assertIn("simultaneous inference requests", result.output)
-        self.assertIn("prefill at 4-7 requests", result.output)
-        self.assertIn("8 permits", result.output)
+        assert result.exit_code == 0, result.output
+        assert "--capacity" in result.output
+        assert "balanced" in result.output
+        assert "long-context" in result.output
+        assert "native-context" in result.output
+        assert "simultaneous inference requests" in result.output
+        assert "prefill at 4-7 requests" in result.output
+        assert "8 permits" in result.output
 
     def test_machine_errors_are_stable_and_human_errors_offer_next_action(self) -> None:
         machine = self.runner.invoke(self.app, ["doctor", "--json"])
-        self.assertEqual(machine.exit_code, 1)
-        self.assertEqual(json.loads(machine.output)["error"]["code"], "repair_required")
+        assert machine.exit_code == 1
+        assert json.loads(machine.output)["error"]["code"] == "repair_required"
 
         human = self.runner.invoke(self.app, ["doctor"])
-        self.assertEqual(human.exit_code, 1)
-        self.assertIn("OptiQ capability conflict", human.output)
-        self.assertIn("mlxctl runtime update optiq", human.output)
+        assert human.exit_code == 1
+        assert "OptiQ capability conflict" in human.output
+        assert "mlxctl runtime update optiq" in human.output
 
     def test_check_returns_nonzero_when_the_reported_state_is_unhealthy(self) -> None:
         original = self.dispatcher.execute
@@ -225,16 +229,12 @@ class CliV1Tests(unittest.TestCase):
         self.dispatcher.execute = unhealthy
         result = self.runner.invoke(self.app, ["check", "--json"])
 
-        self.assertEqual(result.exit_code, 1, result.output)
-        self.assertEqual(json.loads(result.output)["state"], "stopped")
+        assert result.exit_code == 1, result.output
+        assert json.loads(result.output)["state"] == "stopped"
 
     def test_explicit_tui_command_uses_injected_launcher(self) -> None:
         result = self.runner.invoke(self.app, ["tui"])
 
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertEqual(self.tui_calls, 1)
-        self.assertFalse(self.dispatcher.requests)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result.exit_code == 0, result.output
+        assert self.tui_calls == 1
+        assert not self.dispatcher.requests

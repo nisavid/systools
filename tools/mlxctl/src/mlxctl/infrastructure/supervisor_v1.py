@@ -145,7 +145,8 @@ class OperationalState(Protocol):
 
 
 class ManagedProcess(Protocol):
-    pid: int
+    @property
+    def pid(self) -> int: ...
 
     def poll(self) -> int | None: ...
 
@@ -701,8 +702,9 @@ class Supervisor:
         """Return Gateway routes without starting stopped services."""
 
         return tuple(
-            self.resolve(str(service.route))
+            route
             for service in self._desired_state.services()
+            if (route := self.resolve(str(service.route))) is not None
         )
 
     def resolve(self, service: str) -> GatewayRoute | None:

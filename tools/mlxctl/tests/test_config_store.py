@@ -2,15 +2,17 @@ import shutil
 import stat
 import tempfile
 import threading
-import unittest
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from typing import cast
+
+import pytest
 
 from mlxctl.infrastructure.config_store import ConfigChange, ConfigStore
 
 
-class ConfigStoreTests(unittest.TestCase):
+class TestConfigStore:
     def test_rejects_symlinked_config_history_lock_and_journal_targets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -19,54 +21,57 @@ class ConfigStoreTests(unittest.TestCase):
 
             config = root / "config.toml"
             config.symlink_to(outside)
-            with self.assertRaises(OSError):
+            with pytest.raises(OSError):
                 ConfigStore(config, lambda data: data)
             config.unlink()
 
             history = root / ".config.toml.history"
             shutil.rmtree(history)
             history.symlink_to(root, target_is_directory=True)
-            with self.assertRaises(RuntimeError):
+            with pytest.raises(RuntimeError):
                 ConfigStore(config, lambda data: data)
             history.unlink()
 
             store = ConfigStore(config, lambda data: data)
             lock = root / "config.toml.lock"
             lock.symlink_to(outside)
-            with self.assertRaises(OSError):
+            with pytest.raises(OSError):
                 store.import_text("schema_version = 1\n")
             lock.unlink()
 
             journal = root / ".config.toml.journal.jsonl"
             journal.symlink_to(outside)
-            with self.assertRaises(OSError):
+            with pytest.raises(OSError):
                 store.import_text("schema_version = 1\n")
 
-            self.assertEqual(outside.read_text(encoding="utf-8"), "preserve")
+            assert outside.read_text(encoding="utf-8") == "preserve"
 
-    def test_rejects_a_private_directory_not_owned_by_the_current_user(self) -> None:
+    def test_rejects_a_private_directory_not_owned_by_the_current_user(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         with (
             tempfile.TemporaryDirectory() as directory,
-            patch(
-                "mlxctl.infrastructure.config_store.os.getuid",
-                return_value=Path(directory).stat().st_uid + 1,
-            ),
-            self.assertRaises(PermissionError),
+            monkeypatch.context() as patched,
         ):
-            ConfigStore(Path(directory) / "config.toml", lambda data: data)
+            patched.setattr(
+                "mlxctl.infrastructure.config_store.os.getuid",
+                lambda: Path(directory).stat().st_uid + 1,
+            )
+            with pytest.raises(PermissionError):
+                ConfigStore(Path(directory) / "config.toml", lambda data: data)
 
     def test_exists_distinguishes_uninitialized_from_saved_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.toml", lambda data: data)
 
-            self.assertFalse(store.exists)
+            assert not store.exists
             store.import_text("schema_version = 1\n")
-            self.assertTrue(store.exists)
+            assert store.exists
 
     def test_round_trips_comments_and_returns_validated_value(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "mlxctl" / "config.toml"
-            store = ConfigStore(path, lambda data: int(data["schema_version"]))
+            store = ConfigStore(path, lambda data: cast(int, data["schema_version"]))
 
             saved = store.import_text(
                 "# operator note\nschema_version = 1\n\n[gateway]\nport = 8766\n"
@@ -74,15 +79,15 @@ class ConfigStoreTests(unittest.TestCase):
             saved.document["gateway"]["port"] = 9000
             loaded = store.save(saved.document)
 
-            self.assertEqual(loaded.value, 1)
-            self.assertIn("# operator note", store.export_text())
-            self.assertIn("port = 9000", store.export_text())
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            assert loaded.value == 1
+            assert "# operator note" in store.export_text()
+            assert "port = 9000" in store.export_text()
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
     def test_failed_validation_does_not_replace_the_current_document(self) -> None:
-        def validate(data: object) -> int:
-            version = int(data["schema_version"])  # type: ignore[index]
+        def validate(data: Mapping[str, object]) -> int:
+            version = cast(int, data["schema_version"])
             if version != 1:
                 raise ValueError("unsupported schema")
             return version
@@ -91,10 +96,10 @@ class ConfigStoreTests(unittest.TestCase):
             store = ConfigStore(Path(directory) / "config.toml", validate)
             store.import_text("schema_version = 1\n")
 
-            with self.assertRaisesRegex(ValueError, "unsupported schema"):
+            with pytest.raises(ValueError, match="unsupported schema"):
                 store.import_text("schema_version = 2\n")
 
-            self.assertEqual(store.export_text(), "schema_version = 1\n")
+            assert store.export_text() == "schema_version = 1\n"
 
     def test_records_semantic_history_and_restores_an_exact_revision(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -108,24 +113,23 @@ class ConfigStoreTests(unittest.TestCase):
                 "# second\nschema_version = 1\n[gateway]\nport = 9000\n"
             )
 
-            self.assertEqual(
-                store.diff(first.document),
-                (ConfigChange(("gateway", "port"), 9000, 8766),),
+            assert store.diff(first.document) == (
+                ConfigChange(("gateway", "port"), 9000, 8766),
             )
-            self.assertEqual(
-                tuple(item.revision for item in store.history()),
-                (first.revision, second.revision),
+            assert tuple(item.revision for item in store.history()) == (
+                first.revision,
+                second.revision,
             )
 
             restored = store.restore(first.revision)
 
-            self.assertEqual(restored.revision, first.revision)
-            self.assertEqual(store.export_text(), first.document.as_string())
+            assert restored.revision == first.revision
+            assert store.export_text() == first.document.as_string()
 
     def test_serializes_concurrent_semantic_edits_without_losing_updates(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(
-                Path(directory) / "config.toml", lambda data: int(data["count"])
+                Path(directory) / "config.toml", lambda data: cast(int, data["count"])
             )
             store.import_text("count = 0\n")
             ready = threading.Barrier(8)
@@ -141,40 +145,36 @@ class ConfigStoreTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=8) as pool:
                 tuple(pool.map(lambda _index: increment(), range(8)))
 
-            self.assertEqual(store.load().value, 8)
+            assert store.load().value == 8
 
     def test_recovers_a_replaced_config_when_the_journal_commit_was_interrupted(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            store = ConfigStore(path, lambda data: int(data["generation"]))
+            store = ConfigStore(path, lambda data: cast(int, data["generation"]))
             store.import_text("generation = 1\n")
             current = store.import_text("generation = 2\n")
             journal = path.parent / ".config.toml.journal.jsonl"
             entries = journal.read_bytes().splitlines(keepends=True)
             journal.write_bytes(entries[0] + b'{"revision":')
 
-            recovered = ConfigStore(path, lambda data: int(data["generation"]))
+            recovered = ConfigStore(path, lambda data: cast(int, data["generation"]))
 
-            self.assertEqual(recovered.load().value, 2)
-            self.assertEqual(recovered.history()[-1].revision, current.revision)
-            self.assertEqual(recovered.history()[-1].action, "recovered")
+            assert recovered.load().value == 2
+            assert recovered.history()[-1].revision == current.revision
+            assert recovered.history()[-1].action == "recovered"
 
     def test_reports_a_complete_corrupt_journal_entry_instead_of_discarding_it(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            store = ConfigStore(path, lambda data: int(data["schema_version"]))
+            store = ConfigStore(path, lambda data: cast(int, data["schema_version"]))
             store.import_text("schema_version = 1\n")
             journal = path.parent / ".config.toml.journal.jsonl"
             with journal.open("ab") as stream:
                 stream.write(b"not-json\n")
 
-            with self.assertRaisesRegex(RuntimeError, "config journal is corrupt"):
+            with pytest.raises(RuntimeError, match="config journal is corrupt"):
                 store.history()
-
-
-if __name__ == "__main__":
-    unittest.main()

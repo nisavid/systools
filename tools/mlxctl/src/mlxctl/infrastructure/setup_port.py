@@ -13,8 +13,11 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, cast, overload
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 from mlxctl.application.dispatch import ApplicationError
 from mlxctl.application.setup import (
@@ -394,7 +397,7 @@ class SetupOperationPort:
                 "gateway.configure",
                 {
                     "host": str(endpoint.hostname),
-                    "port": int(endpoint.port or 0),
+                    "port": endpoint.port or 0,
                     "confirmed": True,
                 },
             )
@@ -601,14 +604,14 @@ def _selection(
         model_alias=str(model_alias) if model_alias is not None else None,
         service_route=str(service_route) if service_route is not None else None,
         activation=str(overrides.get("activation", baseline.activation)),
-        pinned=overrides.get("pinned", baseline.pinned),  # type: ignore[arg-type]
+        pinned=cast(bool, overrides.get("pinned", baseline.pinned)),
         service_options=service_options,
         gateway_endpoint=str(
             overrides.get("gateway_endpoint", baseline.gateway_endpoint)
         ),
         clients=clients,
-        client_options=client_options,  # type: ignore[arg-type]
-        sampling_profiles=sampling,  # type: ignore[arg-type]
+        client_options=client_options,
+        sampling_profiles=sampling,
         context_window=_optional_int(
             overrides.get("context_window", baseline.context_window)
         ),
@@ -700,7 +703,7 @@ def _material_result(
 
 
 def _restore_material(evidence: Sequence[SetupEvidence]) -> dict[str, object]:
-    restored = {}
+    restored: dict[str, object] = {}
     for item in evidence:
         if item.state is not StepState.COMPLETE or not item.detail:
             continue
@@ -779,6 +782,14 @@ def _optional_int(value: object) -> int | None:
             "invalid_parameter", "context_window must be a positive integer"
         )
     return value
+
+
+@overload
+def _plain(value: DataclassInstance | Mapping[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _plain(value: object) -> object: ...
 
 
 def _plain(value: object) -> object:

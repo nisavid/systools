@@ -11,22 +11,23 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from mlxctl.application.dispatch import OperationRequest
+from mlxctl.application.dispatch import OperationRequest, OperationResult
+from mlxctl.infrastructure.launchd import LaunchdStatus
 from mlxctl.interfaces.tui import ServiceSnapshot, TuiSnapshot
 
 _RESOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 class LaunchdPort(Protocol):
-    def status(self): ...
+    def status(self) -> LaunchdStatus: ...
 
-    def register(self): ...
+    def register(self) -> LaunchdStatus: ...
 
-    def kickstart(self): ...
+    def kickstart(self) -> LaunchdStatus: ...
 
 
 class StatusDispatcher(Protocol):
-    def execute(self, request: OperationRequest): ...
+    def execute(self, request: OperationRequest) -> OperationResult: ...
 
 
 class MetricsStore(Protocol):

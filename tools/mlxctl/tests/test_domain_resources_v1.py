@@ -1,4 +1,4 @@
-import unittest
+import pytest
 
 from mlxctl.domain.resources import (
     ActivationPolicy,
@@ -15,16 +15,16 @@ from mlxctl.domain.resources import (
 )
 
 
-class ResourceIdentityTests(unittest.TestCase):
+class TestResourceIdentity:
     def test_model_intent_cache_and_alias_are_distinct(self) -> None:
         revision = ModelRevision("mlx-community/Qwen", "a" * 40)
         cached = CachedRevision(revision, complete=True, size_bytes=42)
         installation = ModelInstallation("qwen-exact", revision)
         alias = ModelAlias(ResourceName("coding-model"), installation.name)
 
-        self.assertEqual(cached.revision, installation.revision)
-        self.assertNotEqual(cached, installation)
-        self.assertEqual(alias.installation_name, "qwen-exact")
+        assert cached.revision == installation.revision
+        assert cached != installation
+        assert alias.installation_name == "qwen-exact"
 
     def test_service_desired_state_is_separate_from_run(self) -> None:
         service = InferenceService(
@@ -43,9 +43,9 @@ class ResourceIdentityTests(unittest.TestCase):
             upstream_port=49152,
         )
 
-        self.assertTrue(service.pinned)
-        self.assertEqual(run.service_name, service.name)
-        self.assertEqual(run.upstream_port, 49152)
+        assert service.pinned
+        assert run.service_name == service.name
+        assert run.upstream_port == 49152
 
     def test_runtime_installation_has_exact_family_version_and_provenance(self) -> None:
         runtime = RuntimeInstallation(
@@ -56,16 +56,14 @@ class ResourceIdentityTests(unittest.TestCase):
             capabilities=frozenset({"chat_completions", "max_context"}),
         )
 
-        self.assertEqual(runtime.family, RuntimeFamily.MLX_LM)
-        self.assertIn("max_context", runtime.capabilities)
+        assert runtime.family == RuntimeFamily.MLX_LM
+        assert "max_context" in runtime.capabilities
 
-    def test_invalid_resource_names_and_mutable_revisions_are_rejected(self) -> None:
+    def test_invalid_resource_names_and_mutable_revisions_are_rejected(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for invalid in ("", "has space", "../escape", "/absolute", "ümlaut"):
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+            with subtests.test(invalid=invalid), pytest.raises(ValueError):
                 ResourceName(invalid)
-        with self.assertRaisesRegex(ValueError, "immutable commit SHA"):
+        with pytest.raises(ValueError, match="immutable commit SHA"):
             ModelRevision("org/model", "main")
-
-
-if __name__ == "__main__":
-    unittest.main()
