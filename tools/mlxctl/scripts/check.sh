@@ -7,5 +7,6 @@ uv run --locked pyrefly check
 uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked pytest
-uv run --locked uv build --no-build-isolation --clear
+build_python=$(uv run --locked python -c 'import sys; print(sys.executable)')
+uv run --locked uv build --python "$build_python" --no-build-isolation --clear
 git diff --check
