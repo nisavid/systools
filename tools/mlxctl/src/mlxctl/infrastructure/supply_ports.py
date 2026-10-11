@@ -8,10 +8,10 @@ import os
 import re
 import shutil
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import tomlkit
 
@@ -1656,7 +1656,7 @@ def _security_summary(assessment: Mapping[str, object]) -> dict[str, object]:
 
 
 def _bounded_records(items: tuple[object, ...] | list[object]) -> list[object]:
-    records = []
+    records: list[object] = []
     for item in items[:64]:
         if isinstance(item, Mapping):
             records.append(
@@ -1682,7 +1682,10 @@ def _bounded_text(value: object) -> str | None:
 def _assessment_with_verification(
     assessment: Mapping[str, object], verification: VerificationResult
 ) -> dict[str, object]:
-    blockers = [str(item) for item in assessment.get("hard_blockers", ())]
+    blockers = [
+        str(item)
+        for item in cast(Iterable[object], assessment.get("hard_blockers", ()))
+    ]
     if verification.status not in {"complete", "verified"} or verification.issues:
         blockers.append("integrity_mismatch")
     return {

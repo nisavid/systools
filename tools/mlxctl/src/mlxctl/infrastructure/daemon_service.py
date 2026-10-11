@@ -6,9 +6,9 @@ import asyncio
 import signal
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import uuid4
 
 from mlxctl.application.dispatch import ApplicationError
@@ -228,8 +228,8 @@ class DaemonOperationRouter:
             value.get("state"),
             value.get("pressure"),
             value.get("shedding_new_work"),
-            tuple(value.get("restarted_services", ())),
-            tuple(value.get("stopped_services", ())),
+            tuple(cast(Iterable[str], value.get("restarted_services", ()))),
+            tuple(cast(Iterable[str], value.get("stopped_services", ()))),
         )
         if signature != self._last_maintenance:
             self._record_lifecycle(value)

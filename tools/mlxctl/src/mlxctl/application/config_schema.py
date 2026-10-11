@@ -448,7 +448,7 @@ def _clients(
             }
             if any(
                 value is not None
-                and type(value) in {int, float}
+                and (type(value) is int or type(value) is float)
                 and not math.isfinite(float(value))
                 for value in numeric_values.values()
             ):
@@ -456,13 +456,15 @@ def _clients(
                     f"client {name!r} sampling profile {sampling_name!r} numeric values must be finite"
                 )
             if temperature is not None and (
-                type(temperature) not in {int, float} or temperature < 0
+                (type(temperature) is not int and type(temperature) is not float)
+                or temperature < 0
             ):
                 raise ConfigSchemaError(
                     f"client {name!r} sampling profile {sampling_name!r} temperature must be nonnegative"
                 )
             if top_p is not None and (
-                type(top_p) not in {int, float} or not 0 < top_p <= 1
+                (type(top_p) is not int and type(top_p) is not float)
+                or not 0 < top_p <= 1
             ):
                 raise ConfigSchemaError(
                     f"client {name!r} sampling profile {sampling_name!r} top_p must be in (0, 1]"
@@ -472,20 +474,28 @@ def _clients(
                     f"client {name!r} sampling profile {sampling_name!r} top_k must be a nonnegative integer"
                 )
             if min_p is not None and (
-                type(min_p) not in {int, float} or not 0 <= min_p <= 1
+                (type(min_p) is not int and type(min_p) is not float)
+                or not 0 <= min_p <= 1
             ):
                 raise ConfigSchemaError(
                     f"client {name!r} sampling profile {sampling_name!r} min_p must be in [0, 1]"
                 )
             if presence_penalty is not None and (
-                type(presence_penalty) not in {int, float}
+                (
+                    type(presence_penalty) is not int
+                    and type(presence_penalty) is not float
+                )
                 or not -2 <= presence_penalty <= 2
             ):
                 raise ConfigSchemaError(
                     f"client {name!r} sampling profile {sampling_name!r} presence_penalty must be in [-2, 2]"
                 )
             if repetition_penalty is not None and (
-                type(repetition_penalty) not in {int, float} or repetition_penalty <= 0
+                (
+                    type(repetition_penalty) is not int
+                    and type(repetition_penalty) is not float
+                )
+                or repetition_penalty <= 0
             ):
                 raise ConfigSchemaError(
                     f"client {name!r} sampling profile {sampling_name!r} repetition_penalty must be positive"
@@ -519,12 +529,13 @@ def _clients(
                     f"client {name!r} sampling profile {sampling_name!r} upstream_profile is invalid"
                 )
             if source_url is not None:
-                parsed_source = (
-                    urlsplit(source_url) if isinstance(source_url, str) else None
-                )
+                if not isinstance(source_url, str):
+                    raise ConfigSchemaError(
+                        f"client {name!r} sampling profile {sampling_name!r} source_url must be HTTPS"
+                    )
+                parsed_source = urlsplit(source_url)
                 if (
-                    parsed_source is None
-                    or parsed_source.scheme != "https"
+                    parsed_source.scheme != "https"
                     or not parsed_source.hostname
                     or parsed_source.username is not None
                     or parsed_source.password is not None

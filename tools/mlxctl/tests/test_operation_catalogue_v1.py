@@ -1,4 +1,7 @@
-import unittest
+from collections.abc import MutableMapping
+from typing import cast
+
+import pytest
 
 from mlxctl.application.catalogue import (
     OperationKind,
@@ -8,8 +11,9 @@ from mlxctl.application.catalogue import (
 )
 
 
-class OperationCatalogueTests(unittest.TestCase):
-    def setUp(self) -> None:
+class TestOperationCatalogue:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.catalogue = build_operation_catalogue()
 
     def test_contains_the_complete_approved_command_tree(self) -> None:
@@ -38,18 +42,19 @@ class OperationCatalogueTests(unittest.TestCase):
             "metrics",
             "tui",
         }
-        self.assertTrue(required.issubset(self.catalogue))
+        assert required.issubset(self.catalogue)
 
-    def test_reads_never_activate_the_supervisor(self) -> None:
+    def test_reads_never_activate_the_supervisor(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for operation in self.catalogue.values():
             if operation.kind is OperationKind.QUERY:
-                with self.subTest(operation=operation.name):
-                    self.assertIs(
-                        operation.supervisor,
-                        SupervisorRequirement.NEVER_START,
-                    )
+                with subtests.test(operation=operation.name):
+                    assert operation.supervisor is SupervisorRequirement.NEVER_START
 
-    def test_local_desired_state_mutations_do_not_require_supervisor(self) -> None:
+    def test_local_desired_state_mutations_do_not_require_supervisor(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for name in (
             "remove",
             "gateway.configure",
@@ -62,99 +67,95 @@ class OperationCatalogueTests(unittest.TestCase):
             "config.import",
             "config.restore",
         ):
-            with self.subTest(operation=name):
-                self.assertIs(
-                    self.catalogue[name].supervisor,
-                    SupervisorRequirement.NEVER_START,
+            with subtests.test(operation=name):
+                assert (
+                    self.catalogue[name].supervisor is SupervisorRequirement.NEVER_START
                 )
 
     def test_supervisor_stop_never_starts_the_supervisor_it_is_stopping(self) -> None:
-        self.assertIs(
-            self.catalogue["supervisor.stop"].supervisor,
-            SupervisorRequirement.NEVER_START,
+        assert (
+            self.catalogue["supervisor.stop"].supervisor
+            is SupervisorRequirement.NEVER_START
         )
 
     def test_mutations_declare_confirmation_and_machine_help(self) -> None:
         install = self.catalogue["model.install"]
-        self.assertTrue(install.confirmation)
-        self.assertIn("exact revision", install.summary.lower())
-        self.assertTrue(install.examples)
-        self.assertIn("json", install.output_modes)
+        assert install.confirmation
+        assert "exact revision" in install.summary.lower()
+        assert install.examples
+        assert "json" in install.output_modes
 
     def test_summaries_explain_user_visible_effects(self) -> None:
-        self.assertEqual(
-            self.catalogue["model.search"].summary,
-            "Search curated, Hugging Face, or local cached models.",
+        assert (
+            self.catalogue["model.search"].summary
+            == "Search curated, Hugging Face, or local cached models."
         )
-        self.assertIn(
-            "drain and stop one service",
-            self.catalogue["service.stop"].summary.casefold(),
+        assert (
+            "drain and stop one service"
+            in self.catalogue["service.stop"].summary.casefold()
         )
-        self.assertIn(
-            "desired and live state",
-            self.catalogue["service.list"].summary.casefold(),
+        assert (
+            "desired and live state"
+            in self.catalogue["service.list"].summary.casefold()
         )
 
     def test_parameters_explain_accepted_values_and_discovery(self) -> None:
         install = self.catalogue["runtime.install"]
-        self.assertEqual(install.parameters[0].kind, ParameterKind.ARGUMENT)
-        self.assertEqual(
-            install.parameters[0].accepted,
-            ("mlx_lm", "mlx_vlm", "optiq"),
-        )
+        assert install.parameters[0].kind == ParameterKind.ARGUMENT
+        assert install.parameters[0].accepted == ("mlx_lm", "mlx_vlm", "optiq")
         search = self.catalogue["model.search"]
-        self.assertEqual(search.parameters[0].name, "query")
-        self.assertEqual(search.parameters[1].accepted, ("curated", "broad", "local"))
-        self.assertEqual(self.catalogue["status"].parameters, ())
+        assert search.parameters[0].name == "query"
+        assert search.parameters[1].accepted == ("curated", "broad", "local")
+        assert self.catalogue["status"].parameters == ()
         service = self.catalogue["service.create"]
         required_options = {
             parameter.name
             for parameter in service.parameters
             if parameter.required and parameter.kind is ParameterKind.OPTION
         }
-        self.assertEqual(required_options, {"model_alias", "runtime"})
-        self.assertEqual(
-            self.catalogue["client.configure"].parameters[0].accepted,
-            ("codex", "hindsight"),
+        assert required_options == {"model_alias", "runtime"}
+        assert self.catalogue["client.configure"].parameters[0].accepted == (
+            "codex",
+            "hindsight",
         )
         rollback = self.catalogue["model.rollback"]
-        self.assertEqual(
-            [item.name for item in rollback.parameters], ["resource", "target"]
-        )
-        self.assertTrue(rollback.parameters[1].required)
+        assert [item.name for item in rollback.parameters] == ["resource", "target"]
+        assert rollback.parameters[1].required
         adopt = self.catalogue["model.adopt"]
-        self.assertEqual(
-            [item.name for item in adopt.parameters],
-            ["repository", "revision", "path", "alias"],
-        )
-        self.assertTrue(adopt.parameters[1].required)
-        self.assertTrue(adopt.parameters[2].required)
-        self.assertEqual(self.catalogue["runtime.doctor"].parameters, ())
-        self.assertEqual(self.catalogue["runtime.prune"].parameters, ())
-        self.assertEqual(self.catalogue["model.cache.prune"].parameters, ())
-        self.assertEqual(self.catalogue["doctor"].parameters, ())
-        self.assertNotIn("operation.resume", self.catalogue)
-        self.assertNotIn("operation.follow", self.catalogue)
-        self.assertNotIn("operation.cancel", self.catalogue)
+        assert [item.name for item in adopt.parameters] == [
+            "repository",
+            "revision",
+            "path",
+            "alias",
+        ]
+        assert adopt.parameters[1].required
+        assert adopt.parameters[2].required
+        assert self.catalogue["runtime.doctor"].parameters == ()
+        assert self.catalogue["runtime.prune"].parameters == ()
+        assert self.catalogue["model.cache.prune"].parameters == ()
+        assert self.catalogue["doctor"].parameters == ()
+        assert "operation.resume" not in self.catalogue
+        assert "operation.follow" not in self.catalogue
+        assert "operation.cancel" not in self.catalogue
         setup = {
             parameter.name: parameter
             for parameter in self.catalogue["setup"].parameters
         }
-        self.assertEqual(setup["service_options"].value_type, "json")
-        self.assertEqual(setup["clients"].value_type, "json")
-        self.assertEqual(setup["activation"].accepted, ("manual", "supervisor"))
+        assert setup["service_options"].value_type == "json"
+        assert setup["clients"].value_type == "json"
+        assert setup["activation"].accepted == ("manual", "supervisor")
 
-    def test_cli_and_tui_capabilities_are_derived_from_same_entries(self) -> None:
+    def test_cli_and_tui_capabilities_are_derived_from_same_entries(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for operation in self.catalogue.values():
-            with self.subTest(operation=operation.name):
-                self.assertTrue(operation.cli)
-                self.assertTrue(operation.tui)
+            with subtests.test(operation=operation.name):
+                assert operation.cli
+                assert operation.tui
 
     def test_catalogue_is_immutable_and_names_are_unique(self) -> None:
-        with self.assertRaises(TypeError):
-            self.catalogue["status"] = self.catalogue["check"]  # type: ignore[index]
-        self.assertEqual(len(self.catalogue), len(set(self.catalogue)))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        with pytest.raises(TypeError):
+            cast(MutableMapping[str, object], self.catalogue)["status"] = (
+                self.catalogue["check"]
+            )
+        assert len(self.catalogue) == len(set(self.catalogue))

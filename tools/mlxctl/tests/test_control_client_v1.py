@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-import unittest
 from pathlib import Path
+
+import pytest
 
 from mlxctl.infrastructure.control_client import (
     AsyncUnixControlClient,
@@ -24,15 +25,16 @@ from mlxctl.infrastructure.control_protocol import (
 )
 
 
-class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
+@pytest.mark.asyncio(loop_scope="function")
+class TestAsyncUnixControlClient:
     async def test_execute_negotiates_and_returns_correlated_ordered_progress(
-        self,
+        self, async_cleanup
     ) -> None:
         async def handle(request, emit_progress):
-            self.assertEqual(request.request_id, "request-42")
-            self.assertEqual(request.operation_id, "operation-42")
-            self.assertEqual(request.operation, "service.start")
-            self.assertEqual(request.parameters, {"service": "coding"})
+            assert request.request_id == "request-42"
+            assert request.operation_id == "operation-42"
+            assert request.operation == "service.start"
+            assert request.parameters == {"service": "coding"}
             await emit_progress({"phase": "allocating", "completed": 1, "total": 2})
             await emit_progress({"phase": "ready", "completed": 2, "total": 2})
             return {"state": "ready", "service": "coding"}
@@ -40,7 +42,7 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
 
             response = await AsyncUnixControlClient(server.socket_path).execute(
                 "service.start",
@@ -49,25 +51,24 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
                 operation_id="operation-42",
             )
 
-        self.assertEqual(response.request_id, "request-42")
-        self.assertEqual(response.operation_id, "operation-42")
-        self.assertEqual(
-            response.progress,
-            (
-                {"phase": "allocating", "completed": 1, "total": 2},
-                {"phase": "ready", "completed": 2, "total": 2},
-            ),
+        assert response.request_id == "request-42"
+        assert response.operation_id == "operation-42"
+        assert response.progress == (
+            {"phase": "allocating", "completed": 1, "total": 2},
+            {"phase": "ready", "completed": 2, "total": 2},
         )
-        self.assertEqual(response.result, {"state": "ready", "service": "coding"})
+        assert response.result == {"state": "ready", "service": "coding"}
 
-    async def test_synchronous_facade_uses_the_same_protocol_contract(self) -> None:
+    async def test_synchronous_facade_uses_the_same_protocol_contract(
+        self, async_cleanup
+    ) -> None:
         async def handle(request, emit_progress):
             return {"supervisor": "running"}
 
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
 
             response = await asyncio.to_thread(
                 UnixControlClient(server.socket_path).execute,
@@ -76,21 +77,23 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
                 operation_id="operation-sync",
             )
 
-        self.assertEqual(response.request_id, "request-sync")
-        self.assertEqual(response.operation_id, "operation-sync")
-        self.assertEqual(response.result, {"supervisor": "running"})
+        assert response.request_id == "request-sync"
+        assert response.operation_id == "operation-sync"
+        assert response.result == {"supervisor": "running"}
 
     async def test_missing_supervisor_socket_has_a_distinct_stable_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             client = AsyncUnixControlClient(Path(directory) / "missing.sock")
 
-            with self.assertRaises(SupervisorUnavailableError) as raised:
+            with pytest.raises(SupervisorUnavailableError) as raised:
                 await client.execute("status")
 
-        self.assertEqual(raised.exception.code, "supervisor_unavailable")
-        self.assertIn("not running", raised.exception.message)
+        assert raised.value.code == "supervisor_unavailable"
+        assert "not running" in raised.value.message
 
-    async def test_invalid_identifiers_fail_before_connecting(self) -> None:
+    async def test_invalid_identifiers_fail_before_connecting(
+        self, subtests: pytest.Subtests
+    ) -> None:
         client = AsyncUnixControlClient("/a/socket/that/does/not/exist")
 
         for call in (
@@ -99,12 +102,14 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
             client.execute("status", operation_id=""),
             client.cancel(""),
         ):
-            with self.subTest(call=call):
-                with self.assertRaises(ControlClientError) as raised:
+            with subtests.test(call=call):
+                with pytest.raises(ControlClientError) as raised:
                     await call
-                self.assertEqual(raised.exception.code, "invalid_request")
+                assert raised.value.code == "invalid_request"
 
-    async def test_supervisor_operation_error_keeps_its_stable_code(self) -> None:
+    async def test_supervisor_operation_error_keeps_its_stable_code(
+        self, async_cleanup
+    ) -> None:
         async def handle(request, emit_progress):
             raise ControlProtocolError(
                 "service_unknown", "No Inference Service named 'missing' exists."
@@ -113,20 +118,17 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
 
-            with self.assertRaises(RemoteControlError) as raised:
+            with pytest.raises(RemoteControlError) as raised:
                 await AsyncUnixControlClient(server.socket_path).execute(
                     "service.start", {"service": "missing"}
                 )
 
-        self.assertEqual(raised.exception.code, "service_unknown")
-        self.assertEqual(
-            raised.exception.message,
-            "No Inference Service named 'missing' exists.",
-        )
+        assert raised.value.code == "service_unknown"
+        assert raised.value.message == "No Inference Service named 'missing' exists."
 
-    async def test_whole_exchange_has_a_bounded_timeout(self) -> None:
+    async def test_whole_exchange_has_a_bounded_timeout(self, async_cleanup) -> None:
         release = asyncio.Event()
 
         async def stalled(reader, writer):
@@ -136,19 +138,21 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             socket_path = Path(directory) / "mlxd.sock"
             server = await asyncio.start_unix_server(stalled, path=socket_path)
-            self.addAsyncCleanup(self._close_server, server)
+            async_cleanup.push_async_callback(self._close_server, server)
 
             try:
-                with self.assertRaises(ControlConnectionError) as raised:
+                with pytest.raises(ControlConnectionError) as raised:
                     await AsyncUnixControlClient(
                         socket_path, timeout_seconds=0.01
                     ).execute("status")
             finally:
                 release.set()
 
-        self.assertEqual(raised.exception.code, "control_timeout")
+        assert raised.value.code == "control_timeout"
 
-    async def test_out_of_order_progress_is_a_protocol_failure(self) -> None:
+    async def test_out_of_order_progress_is_a_protocol_failure(
+        self, async_cleanup
+    ) -> None:
         async def out_of_order(reader, writer):
             negotiation = await read_message(reader)
             await write_message(
@@ -179,14 +183,16 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             socket_path = Path(directory) / "mlxd.sock"
             server = await asyncio.start_unix_server(out_of_order, path=socket_path)
-            self.addAsyncCleanup(self._close_server, server)
+            async_cleanup.push_async_callback(self._close_server, server)
 
-            with self.assertRaises(ControlProtocolFailure) as raised:
+            with pytest.raises(ControlProtocolFailure) as raised:
                 await AsyncUnixControlClient(socket_path).execute("status")
 
-        self.assertEqual(raised.exception.code, "invalid_progress")
+        assert raised.value.code == "invalid_progress"
 
-    async def test_outbound_and_inbound_frames_use_the_configured_bound(self) -> None:
+    async def test_outbound_and_inbound_frames_use_the_configured_bound(
+        self, async_cleanup
+    ) -> None:
         handled = False
 
         async def handle(request, emit_progress):
@@ -197,20 +203,22 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
             client = AsyncUnixControlClient(server.socket_path, max_frame_bytes=256)
 
-            with self.assertRaises(ControlProtocolFailure) as outbound:
+            with pytest.raises(ControlProtocolFailure) as outbound:
                 await client.execute("service.start", {"payload": "x" * 1_000})
-            self.assertFalse(handled)
-            self.assertEqual(outbound.exception.code, "frame_too_large")
+            assert not handled
+            assert outbound.value.code == "frame_too_large"
 
-            with self.assertRaises(ControlProtocolFailure) as inbound:
+            with pytest.raises(ControlProtocolFailure) as inbound:
                 await client.execute("status")
-            self.assertTrue(handled)
-            self.assertEqual(inbound.exception.code, "frame_too_large")
+            assert handled
+            assert inbound.value.code == "frame_too_large"
 
-    async def test_cancel_uses_the_protocol_cancel_envelope(self) -> None:
+    async def test_cancel_uses_the_protocol_cancel_envelope(
+        self, async_cleanup
+    ) -> None:
         cancelled: list[str] = []
 
         async def handle(request, emit_progress):
@@ -225,22 +233,18 @@ class AsyncUnixControlClientTests(unittest.IsolatedAsyncioTestCase):
                 Path(directory) / "mlxd.sock", handle, cancel_handler=cancel
             )
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
 
             response = await AsyncUnixControlClient(server.socket_path).cancel(
                 "operation-long", request_id="request-cancel"
             )
 
-        self.assertEqual(cancelled, ["operation-long"])
-        self.assertEqual(response.request_id, "request-cancel")
-        self.assertEqual(response.operation_id, "operation-long")
-        self.assertEqual(response.result, {"cancel_requested": True})
+        assert cancelled == ["operation-long"]
+        assert response.request_id == "request-cancel"
+        assert response.operation_id == "operation-long"
+        assert response.result == {"cancel_requested": True}
 
     @staticmethod
     async def _close_server(server: asyncio.AbstractServer) -> None:
         server.close()
         await server.wait_closed()
-
-
-if __name__ == "__main__":
-    unittest.main()

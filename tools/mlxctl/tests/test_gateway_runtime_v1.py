@@ -1,6 +1,8 @@
 import threading
 import time
-import unittest
+from collections.abc import Mapping
+
+import pytest
 
 from mlxctl.infrastructure.gateway import GatewayRoute
 from mlxctl.infrastructure.gateway_runtime import GatewayRuntime
@@ -17,10 +19,11 @@ class FakeServer:
             time.sleep(0.001)
 
 
-class GatewayRuntimeTests(unittest.TestCase):
-    metrics: list[dict[str, object]]
+class TestGatewayRuntime:
+    metrics: list[Mapping[str, object]]
 
-    def setUp(self) -> None:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.server = FakeServer()
         self.now = 100
         self.metrics = []
@@ -46,19 +49,19 @@ class GatewayRuntimeTests(unittest.TestCase):
         self.gateway.set_route("coding", "ready", "http://127.0.0.1:49152")
 
         route = self.gateway.resolve("coding")
-        self.assertIsNotNone(route)
         assert route is not None
-        self.assertEqual(route.model, "qwen")
-        self.assertEqual(route.runtime, "optiq")
-        self.assertEqual(route.endpoint, "http://127.0.0.1:49152")
+        assert route is not None
+        assert route.model == "qwen"
+        assert route.runtime == "optiq"
+        assert route.endpoint == "http://127.0.0.1:49152"
 
         self.gateway.stop(1)
-        self.assertFalse(self.server.started and not self.server.should_exit)
+        assert not (self.server.started and not self.server.should_exit)
 
     def test_activity_prevents_busy_eviction_and_drain_waits(self) -> None:
-        self.assertTrue(self.gateway.begin("coding"))
-        self.assertFalse(self.gateway.begin("coding"))
-        self.assertTrue(self.gateway.is_busy("coding"))
+        assert self.gateway.begin("coding")
+        assert not self.gateway.begin("coding")
+        assert self.gateway.is_busy("coding")
         done = threading.Event()
 
         def drain() -> None:
@@ -68,24 +71,17 @@ class GatewayRuntimeTests(unittest.TestCase):
         thread = threading.Thread(target=drain)
         thread.start()
         time.sleep(0.01)
-        self.assertFalse(done.is_set())
+        assert not done.is_set()
         self.gateway.end("coding")
         thread.join(1)
 
-        self.assertTrue(done.is_set())
-        self.assertFalse(self.gateway.is_busy("coding"))
-        self.assertGreater(self.gateway.last_used_ns("coding"), 0)
-        self.assertEqual(
-            [
-                metric["event"]
-                for metric in self.metrics
-                if metric["scope"] == "gateway"
-            ],
-            ["accepted", "rejected", "complete"],
-        )
-        self.assertEqual(
-            {metric["scope"] for metric in self.metrics}, {"gateway", "service"}
-        )
+        assert done.is_set()
+        assert not self.gateway.is_busy("coding")
+        assert self.gateway.last_used_ns("coding") > 0
+        assert [
+            metric["event"] for metric in self.metrics if metric["scope"] == "gateway"
+        ] == ["accepted", "rejected", "complete"]
+        assert {metric["scope"] for metric in self.metrics} == {"gateway", "service"}
 
     def test_shedding_rejects_new_routes_without_forgetting_identity(self) -> None:
         self.gateway.describe_route(
@@ -101,12 +97,8 @@ class GatewayRuntimeTests(unittest.TestCase):
 
         route = self.gateway.resolve("coding")
 
-        self.assertIsNotNone(route)
         assert route is not None
-        self.assertEqual(route.state, "unavailable")
-        self.assertIsNone(route.endpoint)
-        self.assertEqual(route.model, "qwen")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert route is not None
+        assert route.state == "unavailable"
+        assert route.endpoint is None
+        assert route.model == "qwen"

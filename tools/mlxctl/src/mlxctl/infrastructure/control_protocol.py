@@ -117,7 +117,7 @@ def resolve_peer_uid(peer_socket: socket.socket) -> int | None:
         _, uid, _ = struct.unpack("3i", credentials)
         return uid
     if hasattr(peer_socket, "getpeereid"):
-        uid, _ = peer_socket.getpeereid()  # type: ignore[attr-defined]
+        uid, _ = peer_socket.getpeereid()
         return uid
     if hasattr(socket, "LOCAL_PEERCRED"):
         # Darwin's xucred begins with cr_version and cr_uid. SOL_LOCAL is 0.

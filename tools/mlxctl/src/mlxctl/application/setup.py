@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from ipaddress import ip_address
 from types import MappingProxyType
+from typing import cast
 from urllib.parse import urlsplit
 
 from mlxctl.domain.resources import ActivationPolicy, ResourceName
@@ -97,12 +98,15 @@ class ExactSetupSelection:
         object.__setattr__(self, "clients", tuple(self.clients))
         if self.trust_grants is not None:
             object.__setattr__(self, "trust_grants", tuple(self.trust_grants))
+        # Normalize raw input keys while exposing canonical string-keyed state.
         object.__setattr__(
             self,
             "client_options",
             MappingProxyType(
                 {
-                    str(name): _freeze_json_mapping(settings, f"client_options.{name}")
+                    str(cast(object, name)): _freeze_json_mapping(
+                        settings, f"client_options.{name}"
+                    )
                     for name, settings in self.client_options.items()
                 }
             ),
@@ -112,7 +116,7 @@ class ExactSetupSelection:
             "sampling_profiles",
             MappingProxyType(
                 {
-                    str(name): MappingProxyType(dict(settings))
+                    str(cast(object, name)): MappingProxyType(dict(settings))
                     for name, settings in self.sampling_profiles.items()
                 }
             ),
@@ -346,11 +350,15 @@ class RemovalInventory:
         object.__setattr__(self, "product_owned_paths", tuple(self.product_owned_paths))
         object.__setattr__(self, "shared_cache_paths", tuple(self.shared_cache_paths))
         object.__setattr__(self, "unrelated_settings", tuple(self.unrelated_settings))
+        # Preserve normalization of raw reference keys at the input boundary.
         object.__setattr__(
             self,
             "references",
             MappingProxyType(
-                {str(key): tuple(value) for key, value in self.references.items()}
+                {
+                    str(cast(object, key)): tuple(value)
+                    for key, value in self.references.items()
+                }
             ),
         )
 

@@ -13,7 +13,12 @@ from mlxctl.application.config_schema import (
     MlxctlConfig,
     validate_config,
 )
-from mlxctl.application.dispatch import ApplicationError, OperationRequest
+from mlxctl.application.dispatch import (
+    ApplicationError,
+    Dispatcher,
+    OperationRequest,
+    OperationResult,
+)
 from mlxctl.application.setup import (
     CapacityProfile,
     ExactSetupSelection,
@@ -321,7 +326,7 @@ class _GatewayMutationGuard:
 
     def __init__(
         self,
-        dispatcher,
+        dispatcher: Dispatcher,
         launchd: LaunchdAdapter,
         control_socket: Path | None = None,
     ) -> None:
@@ -329,11 +334,11 @@ class _GatewayMutationGuard:
         self._launchd = launchd
         self._control_socket = control_socket
 
-    def preview(self, request: OperationRequest):
+    def preview(self, request: OperationRequest) -> OperationResult:
         self._check(request)
         return self._dispatcher.preview(request)
 
-    def execute(self, request: OperationRequest):
+    def execute(self, request: OperationRequest) -> OperationResult:
         self._check(request)
         return self._dispatcher.execute(request)
 
@@ -483,7 +488,7 @@ def compose_local(
         application.dispatcher, launchd, paths.control_socket
     )
     public_application = ApplicationComposition(
-        dispatcher=guarded,  # type: ignore[arg-type]
+        dispatcher=guarded,
         catalogue=application.catalogue,
         config_store=application.config_store,
         state_store=application.state_store,

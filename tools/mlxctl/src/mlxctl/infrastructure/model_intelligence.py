@@ -224,7 +224,15 @@ class PsutilMachineInventory:
 
 
 class HubApiPort(Protocol):
-    def model_info(self, repo_id: str, **kwargs: object) -> object: ...
+    def model_info(
+        self,
+        repo_id: str,
+        *,
+        revision: str,
+        files_metadata: bool,
+        securityStatus: bool,
+        timeout: float,
+    ) -> object: ...
 
 
 class MetadataFetchPort(Protocol):
@@ -1174,15 +1182,21 @@ def _selected_weight_paths(
 def _standard_kv_bytes(
     config: Mapping[str, object], *, context_tokens: int, concurrency: int
 ) -> int | None:
-    fields = (
-        config.get("num_hidden_layers"),
-        config.get("hidden_size"),
-        config.get("num_attention_heads"),
-        config.get("num_key_value_heads"),
-    )
-    if not all(type(value) is int and value > 0 for value in fields):
+    layers = config.get("num_hidden_layers")
+    hidden_size = config.get("hidden_size")
+    attention_heads = config.get("num_attention_heads")
+    kv_heads = config.get("num_key_value_heads")
+    if (
+        type(layers) is not int
+        or layers <= 0
+        or type(hidden_size) is not int
+        or hidden_size <= 0
+        or type(attention_heads) is not int
+        or attention_heads <= 0
+        or type(kv_heads) is not int
+        or kv_heads <= 0
+    ):
         return None
-    layers, hidden_size, attention_heads, kv_heads = fields
     if hidden_size % attention_heads:
         return None
     head_dimension = hidden_size // attention_heads

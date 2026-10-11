@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -28,3 +28,34 @@ mlxd = "mlxctl.entrypoints:daemon_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mlxctl"]
+
+[dependency-groups]
+dev = [
+  "hatchling==1.32.4",
+  "pyrefly==1.3.2",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "ruff==0.17.0",
+  "types-psutil==7.2.2.20260906",
+]
+
+[tool.uv]
+required-version = "==0.13.0"
+
+[tool.pyrefly]
+project-includes = ["src", "tests"]
+search-path = ["src"]
+python-version = "3.11"
+preset = "default"
+min-severity = "warn"
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_debug = true
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+filterwarnings = ["error"]

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 from mlxctl.application.catalogue import Operation, build_operation_catalogue
 from mlxctl.application.config_schema import MlxctlConfig, validate_config
-from mlxctl.application.dispatch import OperationDispatcher, SupervisorActivator
+from mlxctl.application.dispatch import (
+    Dispatcher,
+    OperationDispatcher,
+    SupervisorActivator,
+)
 from mlxctl.application.manager import ApplicationManager
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.host_integration import (
@@ -15,21 +18,17 @@ from mlxctl.infrastructure.host_integration import (
     PrivateLogReader,
     StateMetricsSource,
 )
-from mlxctl.infrastructure.local_backend import LocalOperationBackend
+from mlxctl.infrastructure.local_backend import LocalOperationBackend, OperationPort
 from mlxctl.infrastructure.paths_v1 import MlxctlPaths
 from mlxctl.infrastructure.runtime_supply import RuntimeCatalogue
 from mlxctl.infrastructure.state_store import OperationalStateStore
-
-
-class OperationPort(Protocol):
-    def execute(self, operation, parameters): ...
 
 
 @dataclass(frozen=True, slots=True)
 class ApplicationComposition:
     """The one dispatcher and local state shared by CLI and TUI surfaces."""
 
-    dispatcher: OperationDispatcher
+    dispatcher: Dispatcher
     catalogue: dict[str, Operation]
     config_store: ConfigStore[MlxctlConfig]
     state_store: OperationalStateStore

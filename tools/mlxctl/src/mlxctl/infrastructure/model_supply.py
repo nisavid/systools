@@ -124,7 +124,8 @@ class ModelInstallResult:
 
 
 class HubDeletionStrategy(Protocol):
-    expected_freed_size: int
+    @property
+    def expected_freed_size(self) -> int: ...
 
     def execute(self) -> None: ...
 

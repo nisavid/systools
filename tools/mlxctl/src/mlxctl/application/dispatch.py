@@ -54,6 +54,12 @@ class OperationResult:
         )
 
 
+class Dispatcher(Protocol):
+    def preview(self, request: OperationRequest) -> OperationResult: ...
+
+    def execute(self, request: OperationRequest) -> OperationResult: ...
+
+
 @dataclass(slots=True)
 class _Execution:
     request: OperationRequest

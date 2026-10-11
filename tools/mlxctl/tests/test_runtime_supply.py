@@ -1,9 +1,10 @@
 import tempfile
-import unittest
 from hashlib import sha256
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from mlxctl.infrastructure.runtime_supply import (
     RuntimeCatalogue,
@@ -13,8 +14,10 @@ from mlxctl.infrastructure.runtime_supply import (
     RuntimeManager,
     RuntimeProbeResult,
     SubprocessRuntimeProbe,
-    TestedRuntimeBundle,
     UnsupportedLaunchOption,
+)
+from mlxctl.infrastructure.runtime_supply import (
+    TestedRuntimeBundle as RuntimeBundle,
 )
 
 
@@ -45,41 +48,38 @@ class FakeProbe:
         )
 
 
-class RuntimeCatalogueTests(unittest.TestCase):
+class TestRuntimeCatalogue:
     def test_builtin_runtime_definitions_are_discoverable_without_installation(
         self,
     ) -> None:
         catalogue = RuntimeCatalogue.load_builtin()
 
-        self.assertEqual(
-            [definition.key for definition in catalogue.definitions],
-            ["mlx_lm", "mlx_vlm", "optiq"],
+        assert [definition.key for definition in catalogue.definitions] == [
+            "mlx_lm",
+            "mlx_vlm",
+            "optiq",
+        ]
+        assert [bundle.runtime for bundle in catalogue.tested_bundles] == [
+            "mlx_lm",
+            "mlx_vlm",
+            "optiq",
+        ]
+        assert all(
+            sha256(Path(bundle.lock_path).read_bytes()).hexdigest()
+            == bundle.lock_sha256
+            for bundle in catalogue.tested_bundles
         )
-        self.assertEqual(
-            [bundle.runtime for bundle in catalogue.tested_bundles],
-            ["mlx_lm", "mlx_vlm", "optiq"],
-        )
-        self.assertTrue(
-            all(
-                sha256(Path(bundle.lock_path).read_bytes()).hexdigest()
-                == bundle.lock_sha256
-                for bundle in catalogue.tested_bundles
-            )
-        )
-        self.assertEqual(catalogue.definition("optiq").launcher, ("optiq", "serve"))
+        assert catalogue.definition("optiq").launcher == ("optiq", "serve")
 
     def test_capabilities_are_normalized_from_the_exact_installation_flags(
         self,
     ) -> None:
         catalogue = RuntimeCatalogue.load_builtin()
 
-        self.assertEqual(
-            catalogue.normalize_capabilities(
-                "optiq",
-                {"--model", "--host", "--port", "--kv-config", "--mtp"},
-            ),
-            frozenset({"model", "host", "port", "kv_config", "mtp"}),
-        )
+        assert catalogue.normalize_capabilities(
+            "optiq",
+            {"--model", "--host", "--port", "--kv-config", "--mtp"},
+        ) == frozenset({"model", "host", "port", "kv_config", "mtp"})
 
     def test_launch_argv_contains_only_capabilities_observed_on_installation(
         self,
@@ -109,30 +109,27 @@ class RuntimeCatalogueTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(
-            argv,
-            (
-                "/runtimes/optiq-0.2.18/bin/optiq",
-                "serve",
-                "--model",
-                "/models/qwen",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "49152",
-                "--kv-config",
-                "/models/qwen/kv_config.json",
-                "--mtp",
-                "--adapter",
-                "/models/a",
-                "--adapter",
-                "/models/b",
-            ),
+        assert argv == (
+            "/runtimes/optiq-0.2.18/bin/optiq",
+            "serve",
+            "--model",
+            "/models/qwen",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "49152",
+            "--kv-config",
+            "/models/qwen/kv_config.json",
+            "--mtp",
+            "--adapter",
+            "/models/a",
+            "--adapter",
+            "/models/b",
         )
 
-        with self.assertRaisesRegex(
+        with pytest.raises(
             UnsupportedLaunchOption,
-            "does not support launch option 'max_context'",
+            match="does not support launch option 'max_context'",
         ):
             RuntimeLaunchBuilder(catalogue).build(
                 installation,
@@ -142,7 +139,9 @@ class RuntimeCatalogueTests(unittest.TestCase):
                 options={"max_context": 32768},
             )
 
-    def test_capacity_options_are_positive_integers_and_render_exactly(self) -> None:
+    def test_capacity_options_are_positive_integers_and_render_exactly(
+        self, subtests: pytest.Subtests
+    ) -> None:
         catalogue = RuntimeCatalogue.load_builtin()
         installation = RuntimeInstallation(
             installation_id="optiq-0.3.3",
@@ -175,17 +174,17 @@ class RuntimeCatalogueTests(unittest.TestCase):
             },
         )
 
-        self.assertIn(("--max-context", "131072"), tuple(pairwise(argv)))
-        self.assertIn(("--max-concurrent", "6"), tuple(pairwise(argv)))
-        self.assertIn(("--prompt-cache-bytes", str(2 * 1024**3)), tuple(pairwise(argv)))
+        assert ("--max-context", "131072") in tuple(pairwise(argv))
+        assert ("--max-concurrent", "6") in tuple(pairwise(argv))
+        assert ("--prompt-cache-bytes", str(2 * 1024**3)) in tuple(pairwise(argv))
         for name, value in (
             ("max_context", 0),
             ("max_concurrent", -1),
             ("prompt_cache_bytes", "2GiB"),
         ):
             with (
-                self.subTest(name=name),
-                self.assertRaisesRegex(ValueError, "positive integer"),
+                subtests.test(name=name),
+                pytest.raises(ValueError, match="positive integer"),
             ):
                 RuntimeLaunchBuilder(catalogue).build(
                     installation,
@@ -196,7 +195,7 @@ class RuntimeCatalogueTests(unittest.TestCase):
                 )
 
 
-class SubprocessRuntimeProbeTests(unittest.TestCase):
+class TestSubprocessRuntimeProbe:
     def test_probes_through_a_venv_python_symlink_to_the_base_interpreter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "runtime"
@@ -220,11 +219,12 @@ class SubprocessRuntimeProbeTests(unittest.TestCase):
 
             result = SubprocessRuntimeProbe(run=run).probe(definition, root)
 
-            self.assertEqual(result.version, "0.3.3")
-            self.assertEqual(calls[0][0][0], str(root.resolve() / "bin/python"))
-            self.assertEqual(
-                calls[1][0][:3],
-                (str(root.resolve() / "bin/python"), "-m", "mlx_lm.server"),
+            assert result.version == "0.3.3"
+            assert calls[0][0][0] == str(root.resolve() / "bin/python")
+            assert calls[1][0][:3] == (
+                str(root.resolve() / "bin/python"),
+                "-m",
+                "mlx_lm.server",
             )
 
     def test_probes_module_runtime_version_launcher_and_exact_flags(self) -> None:
@@ -248,15 +248,10 @@ class SubprocessRuntimeProbeTests(unittest.TestCase):
             definition = RuntimeCatalogue.load_builtin().definition("mlx_lm")
             result = SubprocessRuntimeProbe(run=run).probe(definition, root)
 
-            self.assertEqual(result.version, "0.31.3")
-            self.assertEqual(
-                result.launcher_relative,
-                ("bin/python", "-m", "mlx_lm.server"),
-            )
-            self.assertEqual(
-                result.supported_flags, frozenset({"--model", "--host", "--port"})
-            )
-            self.assertTrue(all(options["shell"] is False for _, options in calls))
+            assert result.version == "0.31.3"
+            assert result.launcher_relative == ("bin/python", "-m", "mlx_lm.server")
+            assert result.supported_flags == frozenset({"--model", "--host", "--port"})
+            assert all(options["shell"] is False for _, options in calls)
 
     def test_probes_optiq_console_script_and_rejects_failed_help(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -271,7 +266,7 @@ class SubprocessRuntimeProbeTests(unittest.TestCase):
                 return SimpleNamespace(returncode=2, stdout="", stderr="broken")
 
             definition = RuntimeCatalogue.load_builtin().definition("optiq")
-            with self.assertRaisesRegex(ValueError, "help probe failed"):
+            with pytest.raises(ValueError, match="help probe failed"):
                 SubprocessRuntimeProbe(run=run).probe(definition, root)
 
     def test_rejects_an_optiq_console_symlink_outside_the_runtime(self) -> None:
@@ -285,7 +280,7 @@ class SubprocessRuntimeProbeTests(unittest.TestCase):
 
             definition = RuntimeCatalogue.load_builtin().definition("optiq")
 
-            with self.assertRaisesRegex(ValueError, "is not in the subpath"):
+            with pytest.raises(ValueError, match="is not in the subpath"):
                 SubprocessRuntimeProbe(
                     run=lambda *_args, **_options: SimpleNamespace(
                         returncode=0, stdout="0.3.3\n", stderr=""
@@ -293,13 +288,13 @@ class SubprocessRuntimeProbeTests(unittest.TestCase):
                 ).probe(definition, root)
 
 
-class RuntimeManagerTests(unittest.TestCase):
+class TestRuntimeManager:
     def test_tested_bundle_is_installed_immutably_from_an_exact_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lock = root / "optiq.lock"
             lock.write_text("mlx-optiq==0.2.18 --hash=sha256:example\n")
-            bundle = TestedRuntimeBundle(
+            bundle = RuntimeBundle(
                 bundle_id="optiq-0.2.18-py313-macos-arm64",
                 runtime="optiq",
                 version="0.2.18",
@@ -325,27 +320,24 @@ class RuntimeManagerTests(unittest.TestCase):
             install_root = (root / "installed").resolve()
             final = install_root / bundle.bundle_id
             stage = install_root / f".{bundle.bundle_id}.staging-test"
-            self.assertEqual(
-                runner.calls,
-                [
-                    ("uv", "venv", "--python", "3.13", str(stage)),
-                    (
-                        "uv",
-                        "pip",
-                        "sync",
-                        "--python",
-                        str(stage / "bin/python"),
-                        str(lock),
-                    ),
-                ],
-            )
-            self.assertEqual(installation.root, final)
-            self.assertEqual(installation.launcher, (str(final / "bin/optiq"), "serve"))
-            self.assertEqual(installation.provenance, "tested")
-            self.assertEqual(installation.bundle_id, bundle.bundle_id)
-            self.assertFalse(stage.exists())
+            assert runner.calls == [
+                ("uv", "venv", "--python", "3.13", str(stage)),
+                (
+                    "uv",
+                    "pip",
+                    "sync",
+                    "--python",
+                    str(stage / "bin/python"),
+                    str(lock),
+                ),
+            ]
+            assert installation.root == final
+            assert installation.launcher == (str(final / "bin/optiq"), "serve")
+            assert installation.provenance == "tested"
+            assert installation.bundle_id == bundle.bundle_id
+            assert not stage.exists()
 
-            with self.assertRaisesRegex(FileExistsError, "immutable installation"):
+            with pytest.raises(FileExistsError, match="immutable installation"):
                 manager.install_tested(bundle.bundle_id, root / "installed")
 
     def test_custom_version_is_exactly_installed_and_probed(self) -> None:
@@ -367,22 +359,19 @@ class RuntimeManagerTests(unittest.TestCase):
             install_root = root.resolve()
             final = install_root / "optiq-0.3.3-custom"
             stage = install_root / ".optiq-0.3.3-custom.staging-test"
-            self.assertEqual(
-                runner.calls,
-                [
-                    ("uv", "venv", "--python", "3.13", str(stage)),
-                    (
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        str(stage / "bin/python"),
-                        "mlx-optiq==0.3.3",
-                    ),
-                ],
-            )
-            self.assertEqual(installation.root, final)
-            self.assertEqual(installation.provenance, "custom")
+            assert runner.calls == [
+                ("uv", "venv", "--python", "3.13", str(stage)),
+                (
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(stage / "bin/python"),
+                    "mlx-optiq==0.3.3",
+                ),
+            ]
+            assert installation.root == final
+            assert installation.provenance == "custom"
 
     def test_existing_custom_environment_can_be_adopted_after_probe(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -396,12 +385,12 @@ class RuntimeManagerTests(unittest.TestCase):
 
             installation = manager.adopt_custom("optiq", root)
 
-            self.assertEqual(installation.version, "0.3.3")
-            self.assertEqual(installation.provenance, "adopted")
-            self.assertEqual(installation.root, root.resolve())
+            assert installation.version == "0.3.3"
+            assert installation.provenance == "adopted"
+            assert installation.root == root.resolve()
 
 
-class RuntimeChangePlannerTests(unittest.TestCase):
+class TestRuntimeChangePlanner:
     def test_remove_is_blocked_while_services_reference_installation(self) -> None:
         installation = RuntimeInstallation(
             installation_id="optiq-old",
@@ -417,9 +406,9 @@ class RuntimeChangePlannerTests(unittest.TestCase):
             installation, referenced_services=("coding", "memory")
         )
 
-        self.assertFalse(plan.allowed)
-        self.assertEqual(plan.referenced_services, ("coding", "memory"))
-        self.assertIn("reassign referenced services", plan.steps[0])
+        assert not plan.allowed
+        assert plan.referenced_services == ("coding", "memory")
+        assert "reassign referenced services" in plan.steps[0]
 
     def test_update_and_rollback_retain_the_other_installation(self) -> None:
         current = self._installation("optiq-old", "0.2.18")
@@ -431,10 +420,10 @@ class RuntimeChangePlannerTests(unittest.TestCase):
             target, current, referenced_services=("coding",)
         )
 
-        self.assertTrue(update.allowed)
-        self.assertIn("retain optiq-old", update.steps[-1])
-        self.assertTrue(rollback.allowed)
-        self.assertIn("retain optiq-new", rollback.steps[-1])
+        assert update.allowed
+        assert "retain optiq-old" in update.steps[-1]
+        assert rollback.allowed
+        assert "retain optiq-new" in rollback.steps[-1]
 
     @staticmethod
     def _installation(installation_id: str, version: str) -> RuntimeInstallation:
@@ -447,7 +436,3 @@ class RuntimeChangePlannerTests(unittest.TestCase):
             launcher=(f"/runtime/{installation_id}/bin/optiq", "serve"),
             capabilities=frozenset(),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

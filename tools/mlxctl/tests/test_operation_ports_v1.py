@@ -1,19 +1,32 @@
-import unittest
-from types import SimpleNamespace
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+from typing import TypeVar, cast
+
+import pytest
 
 from mlxctl.application.config_schema import ClientSamplingSettings, ClientSettings
 from mlxctl.application.dispatch import ApplicationError
 from mlxctl.infrastructure.client_integrations import (
+    ClientApplyResult,
     ClientConfiguration,
     ClientRemovalResult,
     SamplingProfile,
+    SemanticChange,
+    TestRequest,
 )
-from mlxctl.infrastructure.control_client import SupervisorUnavailableError
+from mlxctl.infrastructure.control_client import (
+    ControlResponse,
+    SupervisorUnavailableError,
+)
 from mlxctl.infrastructure.operation_ports import (
     ClientOperationPort,
     RemoteOperationPort,
     SupervisorOperationPort,
 )
+from mlxctl.infrastructure.supervisor_v1 import Supervisor
+
+Result = TypeVar("Result")
 
 
 class FakeControlClient:
@@ -25,7 +38,8 @@ class FakeControlClient:
         self.calls.append(("execute", operation, dict(parameters or {})))
         if self.error:
             raise self.error
-        return SimpleNamespace(
+        return ControlResponse(
+            request_id="request-1",
             result={"state": "ready"},
             operation_id="op-1",
             progress=({"phase": "start"},),
@@ -33,8 +47,11 @@ class FakeControlClient:
 
     def cancel(self, operation_id):
         self.calls.append(("cancel", operation_id))
-        return SimpleNamespace(
-            result={"cancelled": True}, operation_id=operation_id, progress=()
+        return ControlResponse(
+            request_id="request-1",
+            result={"cancelled": True},
+            operation_id=operation_id,
+            progress=(),
         )
 
 
@@ -69,17 +86,23 @@ class FakeClientAdapter:
 
     def preview(self, configuration):
         self.calls.append(("preview", configuration.service_name))
-        return ("model",)
+        return (SemanticChange(("model",), None, configuration.service_name),)
 
     def apply(self, configuration, *, takeover=False):
         self.calls.append(("apply", configuration.service_name, takeover))
-        return {"changed": True}
+        return ClientApplyResult(True, (), Path("backup"), Path("manifest"))
 
-    def remove(self):
+    def remove(self) -> ClientRemovalResult:
         self.calls.append(("remove",))
-        return {"changed": True}
+        return ClientRemovalResult(True, ())
 
-    def test(self, configuration, request, *, profile):
+    def test(
+        self,
+        configuration: ClientConfiguration,
+        request: TestRequest[Result],
+        *,
+        profile: str,
+    ) -> Result:
         self.calls.append(("test", profile))
         return request(
             configuration.gateway_endpoint,
@@ -96,7 +119,7 @@ class FakeClientAdapter:
         return {"service": resource, "state": "ready"}
 
 
-class OperationPortTests(unittest.TestCase):
+class TestOperationPort:
     def test_remote_port_preserves_progress_and_cancel_identity(self) -> None:
         client = FakeControlClient()
         port = RemoteOperationPort(client)
@@ -104,11 +127,11 @@ class OperationPortTests(unittest.TestCase):
         result = port.execute("service.start", {"resource": "coding"})
         cancelled = port.execute("operation.cancel", {"resource": "op-7"})
 
-        self.assertEqual(result["operation_id"], "op-1")
-        self.assertEqual(result["control_operation_id"], "op-1")
-        self.assertEqual(result["progress"], [{"phase": "start"}])
-        self.assertEqual(cancelled["operation_id"], "op-7")
-        self.assertIn(("cancel", "op-7"), client.calls)
+        assert result["operation_id"] == "op-1"
+        assert result["control_operation_id"] == "op-1"
+        assert result["progress"] == [{"phase": "start"}]
+        assert cancelled["operation_id"] == "op-7"
+        assert ("cancel", "op-7") in client.calls
 
     def test_remote_port_preserves_owner_durable_operation_identity(self) -> None:
         client = FakeControlClient()
@@ -116,14 +139,15 @@ class OperationPortTests(unittest.TestCase):
 
         def execute(operation, parameters=None):
             response = original(operation, parameters)
-            response.result = {"operation_id": "durable-op-9", "state": "ready"}
-            return response
+            return replace(
+                response, result={"operation_id": "durable-op-9", "state": "ready"}
+            )
 
         client.execute = execute
         result = RemoteOperationPort(client).execute("service.start", {})
 
-        self.assertEqual(result["operation_id"], "durable-op-9")
-        self.assertEqual(result["control_operation_id"], "op-1")
+        assert result["operation_id"] == "durable-op-9"
+        assert result["control_operation_id"] == "op-1"
 
     def test_remote_errors_are_stable_application_errors(self) -> None:
         client = FakeControlClient()
@@ -131,26 +155,27 @@ class OperationPortTests(unittest.TestCase):
             "supervisor_unavailable", "not running"
         )
 
-        with self.assertRaises(ApplicationError) as raised:
+        with pytest.raises(ApplicationError) as raised:
             RemoteOperationPort(client).execute("service.start", {"resource": "coding"})
 
-        self.assertEqual(raised.exception.code, "supervisor_unavailable")
+        assert raised.value.code == "supervisor_unavailable"
 
     def test_direct_port_maps_named_lifecycle_without_ambiguity(self) -> None:
         supervisor = FakeSupervisor()
-        port = SupervisorOperationPort(supervisor)  # type: ignore[arg-type]
+        port = SupervisorOperationPort(cast(Supervisor, supervisor))
 
         started = port.execute("service.start", {"resource": "coding"})
         drained = port.execute("service.drain", {"resource": "coding"})
         stopped = port.execute("supervisor.stop", {})
 
-        self.assertEqual(started, {"service": "coding", "state": "ready"})
-        self.assertEqual(drained, {"service": "coding", "state": "drained"})
-        self.assertEqual(stopped["state"], "stopped")
-        self.assertEqual(
-            supervisor.calls,
-            [("start_service", "coding"), ("drain_service", "coding"), ("stop",)],
-        )
+        assert started == {"service": "coding", "state": "ready"}
+        assert drained == {"service": "coding", "state": "drained"}
+        assert stopped["state"] == "stopped"
+        assert supervisor.calls == [
+            ("start_service", "coding"),
+            ("drain_service", "coding"),
+            ("stop",),
+        ]
 
     def test_client_port_uses_one_preview_apply_test_remove_contract(self) -> None:
         adapter = FakeClientAdapter()
@@ -184,14 +209,21 @@ class OperationPortTests(unittest.TestCase):
         tested = port.execute("client.test", {"resource": "codex"})
         removed = port.execute("client.remove", {"resource": "codex"})
 
-        self.assertTrue(configured["result"]["changed"])
-        self.assertEqual(records[0][1].service, "coding-internal")
-        self.assertEqual(tested["response"]["model"], "coding")
-        self.assertTrue(removed["changed"])
-        self.assertEqual(
-            [call[0] for call in adapter.calls], ["preview", "apply", "test", "remove"]
-        )
-        self.assertEqual(records[-1], ("codex", None))
+        assert isinstance(configured["result"], Mapping)
+        assert configured["result"]["changed"]
+        recorded = records[0][1]
+        assert recorded is not None
+        assert recorded.service == "coding-internal"
+        assert isinstance(tested["response"], Mapping)
+        assert tested["response"]["model"] == "coding"
+        assert removed["changed"]
+        assert [call[0] for call in adapter.calls] == [
+            "preview",
+            "apply",
+            "test",
+            "remove",
+        ]
+        assert records[-1] == ("codex", None)
 
     def test_hindsight_profile_is_required_then_persisted_for_test_and_remove(
         self,
@@ -230,7 +262,7 @@ class OperationPortTests(unittest.TestCase):
             ),
         )
 
-        with self.assertRaisesRegex(ApplicationError, "profile"):
+        with pytest.raises(ApplicationError, match="profile"):
             port.execute(
                 "client.configure", {"client": "hindsight", "service": "memory"}
             )
@@ -244,19 +276,17 @@ class OperationPortTests(unittest.TestCase):
             },
         )
         stored = records["hindsight"]
-        self.assertIsInstance(stored, ClientSettings)
-        self.assertEqual(stored.profile, "agent-memory")
-        self.assertEqual(stored.context_window, 32768)
-        self.assertEqual(
-            stored.sampling["reflect"], ClientSamplingSettings(temperature=0.9)
-        )
+        assert isinstance(stored, ClientSettings)
+        assert stored.profile == "agent-memory"
+        assert stored.context_window == 32768
+        assert stored.sampling["reflect"] == ClientSamplingSettings(temperature=0.9)
 
         port.execute("client.test", {"resource": "hindsight", "profile": "retain"})
         port.execute("client.remove", {"resource": "hindsight"})
 
-        self.assertEqual(factory_calls[1][3].profile, "agent-memory")
-        self.assertEqual(factory_calls[2][3].profile, "agent-memory")
-        self.assertNotIn("hindsight", records)
+        assert factory_calls[1][3].profile == "agent-memory"
+        assert factory_calls[2][3].profile == "agent-memory"
+        assert "hindsight" not in records
 
     def test_extra_client_profiles_fail_before_external_apply(self) -> None:
         adapter = FakeClientAdapter()
@@ -273,10 +303,10 @@ class OperationPortTests(unittest.TestCase):
             request=lambda endpoint, model, sampling: {},
         )
 
-        with self.assertRaisesRegex(ApplicationError, "requires sampling profiles"):
+        with pytest.raises(ApplicationError, match="requires sampling profiles"):
             port.execute("client.configure", {"client": "codex", "service": "coding"})
 
-        self.assertEqual(adapter.calls, [])
+        assert adapter.calls == []
 
     def test_hindsight_profile_cannot_change_without_precise_removal(self) -> None:
         stored = ClientSettings(
@@ -298,7 +328,7 @@ class OperationPortTests(unittest.TestCase):
             settings=lambda name: stored,
         )
 
-        with self.assertRaisesRegex(ApplicationError, "[Rr]emove"):
+        with pytest.raises(ApplicationError, match="[Rr]emove"):
             port.execute(
                 "client.configure",
                 {
@@ -338,10 +368,6 @@ class OperationPortTests(unittest.TestCase):
 
         result = port.execute("client.remove", {"resource": "codex"})
 
-        self.assertTrue(result["desired_state_retained"])
-        self.assertEqual(result["skipped_paths"], [["model"]])
-        self.assertEqual(recorded, [])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result["desired_state_retained"]
+        assert result["skipped_paths"] == [["model"]]
+        assert recorded == []

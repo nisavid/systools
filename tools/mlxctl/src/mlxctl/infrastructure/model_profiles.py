@@ -229,7 +229,7 @@ def _number(
     maximum: float,
     minimum_exclusive: bool = False,
 ) -> float:
-    if type(value) not in {int, float}:
+    if type(value) is not int and type(value) is not float:
         raise ModelProfileDefinitionError(f"{name} must be a number")
     number = float(value)
     if not math.isfinite(number):

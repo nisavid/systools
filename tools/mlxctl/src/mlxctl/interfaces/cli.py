@@ -6,7 +6,8 @@ import json
 from collections.abc import Callable, Mapping
 from inspect import Parameter as SignatureParameter
 from inspect import Signature
-from typing import Annotated, Protocol
+from operator import getitem
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from rich.console import Console
@@ -15,15 +16,12 @@ from rich.pretty import Pretty
 from mlxctl.application.catalogue import Operation, Parameter, ParameterKind
 from mlxctl.application.dispatch import (
     ApplicationError,
+    Dispatcher,
     OperationRequest,
-    OperationResult,
 )
 
-
-class Dispatcher(Protocol):
-    def preview(self, request: OperationRequest) -> OperationResult: ...
-
-    def execute(self, request: OperationRequest) -> OperationResult: ...
+if TYPE_CHECKING:
+    from _typeshed import SupportsGetItem
 
 
 _ROOT_COMMANDS = ("setup", "remove", "status", "check", "doctor", "logs", "metrics")
@@ -163,7 +161,7 @@ def _add_command(
 
     command.__name__ = "command_" + operation.name.replace(".", "_")
     command.__doc__ = help_text
-    command.__signature__ = _command_signature(  # type: ignore[attr-defined]
+    command.__dict__["__signature__"] = _command_signature(
         operation.parameters, confirmation=operation.confirmation
     )
     app.command(command_name, help=help_text)(command)
@@ -244,15 +242,18 @@ def _signature_parameter(parameter: Parameter) -> SignatureParameter:
         value_type = str if parameter.required else str | None
         default = SignatureParameter.empty if parameter.required else None
     if parameter.kind is ParameterKind.ARGUMENT:
-        annotation = Annotated[value_type, typer.Argument(help=help_text)]
+        annotation = getitem(
+            cast("SupportsGetItem[tuple[object, object], object]", Annotated),
+            (value_type, typer.Argument(help=help_text)),
+        )
     else:
         option_flag = parameter.flag or "--" + parameter.name
         if parameter.value_type == "tristate_boolean":
             option_flag += "/--no-" + parameter.name.replace("_", "-")
-        annotation = Annotated[
-            value_type,
-            typer.Option(option_flag, help=help_text),
-        ]
+        annotation = getitem(
+            cast("SupportsGetItem[tuple[object, object], object]", Annotated),
+            (value_type, typer.Option(option_flag, help=help_text)),
+        )
     return SignatureParameter(
         parameter.name,
         SignatureParameter.POSITIONAL_OR_KEYWORD,

@@ -1,18 +1,27 @@
 import json
-import unittest
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
+
+import pytest
 
 from mlxctl.application.catalogue import OperationKind, build_operation_catalogue
 from mlxctl.application.config_schema import validate_config
 from mlxctl.application.dispatch import ApplicationError, OperationRequest
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.control_protocol import MAX_FRAME_BYTES
-from mlxctl.infrastructure.local_backend import LocalOperationBackend
+from mlxctl.infrastructure.local_backend import (
+    LocalOperationBackend,
+    LogReader,
+    MetricsSource,
+    OperationPort,
+)
 from mlxctl.infrastructure.model_supply import (
     CachedRevision,
     CacheInventory,
     CatalogCandidate,
+    ModelHub,
     ModelRevision,
     ModelSupply,
     VerificationResult,
@@ -194,20 +203,21 @@ class _ModelIntelligence:
     def __init__(self):
         self.calls = []
 
-    def inspect(self, repository, revision, **scenario):
+    def inspect(self, repository, revision, **scenario) -> dict[str, object]:
         self.calls.append((repository, revision, scenario))
         return {"identity": {"repo_id": repository, "commit_sha": "b" * 40}}
 
 
 class _DirectInstallSupply(_ModelSupply):
-    execute = None
+    # Exercise the fallback when this optional operation entry is non-callable.
+    execute = cast(Callable[..., dict[str, str]], None)
 
     def install(self, **parameters):
         self.calls.append(("install", parameters))
         return {"alias": parameters["alias"]}
 
 
-class LocalOperationBackendTests(unittest.TestCase):
+class TestLocalOperationBackend:
     def _backend(self, root: Path, config: str = _CONFIG, **ports):
         config_path = root / "config.toml"
         config_path.write_text(config, encoding="utf-8")
@@ -218,7 +228,9 @@ class LocalOperationBackendTests(unittest.TestCase):
             state_store=state,
             runtime_catalogue=RuntimeCatalogue.load_builtin(),
             runtime_supply=ports.get("runtime_supply", _NeverCalled()),
-            model_supply=ports.get("model_supply", ModelSupply(_NeverCalled())),
+            model_supply=ports.get(
+                "model_supply", ModelSupply(cast(ModelHub, _NeverCalled()))
+            ),
             supervisor=ports.get("supervisor", _NeverCalled()),
             logs=ports.get("logs", _NeverCalled()),
             metrics=ports.get("metrics", _NeverCalled()),
@@ -239,27 +251,29 @@ class LocalOperationBackendTests(unittest.TestCase):
                 config_store=ConfigStore(config_path, validate_config),
                 state_store=OperationalStateStore(root / "state.sqlite3"),
                 runtime_catalogue=RuntimeCatalogue.load_builtin(),
-                runtime_supply=_NeverCalled(),
-                model_supply=ModelSupply(_NeverCalled()),
-                supervisor=_NeverCalled(),
-                logs=_NeverCalled(),
-                metrics=_NeverCalled(),
-                setup=_NeverCalled(),
-                clients=_NeverCalled(),
+                runtime_supply=cast(OperationPort, _NeverCalled()),
+                model_supply=ModelSupply(cast(ModelHub, _NeverCalled())),
+                supervisor=cast(OperationPort, _NeverCalled()),
+                logs=cast(LogReader, _NeverCalled()),
+                metrics=cast(MetricsSource, _NeverCalled()),
+                setup=cast(OperationPort, _NeverCalled()),
+                clients=cast(OperationPort, _NeverCalled()),
                 config_path=config_path,
             )
 
             prepared = backend.prepare(OperationRequest("status"))
             result = prepared.execute()
 
-            self.assertFalse(prepared.requires_supervisor)
-            self.assertEqual(result["schema_version"], 1)
-            self.assertEqual(result["supervisor"]["state"], "stopped")
-            self.assertEqual(result["services"], [])
-            self.assertEqual(result["operations"], [])
-            self.assertEqual(result["active_operations"], 0)
-            self.assertEqual(result["pressure"], "unknown")
-            self.assertIn("mlxctl supervisor start", result["next_actions"])
+            assert not prepared.requires_supervisor
+            assert result["schema_version"] == 1
+            assert isinstance(result["supervisor"], Mapping)
+            assert result["supervisor"]["state"] == "stopped"
+            assert result["services"] == []
+            assert result["operations"] == []
+            assert result["active_operations"] == 0
+            assert result["pressure"] == "unknown"
+            assert isinstance(result["next_actions"], (list, tuple, Mapping, str))
+            assert "mlxctl supervisor start" in result["next_actions"]
 
     def test_uninitialized_status_and_config_are_actionable_without_a_file(
         self,
@@ -273,23 +287,24 @@ class LocalOperationBackendTests(unittest.TestCase):
                 config_store=ConfigStore(config_path, validate_config),
                 state_store=state,
                 runtime_catalogue=RuntimeCatalogue.load_builtin(),
-                runtime_supply=_NeverCalled(),
-                model_supply=ModelSupply(_NeverCalled()),
-                supervisor=_NeverCalled(),
-                logs=_NeverCalled(),
-                metrics=_NeverCalled(),
-                setup=_NeverCalled(),
-                clients=_NeverCalled(),
+                runtime_supply=cast(OperationPort, _NeverCalled()),
+                model_supply=ModelSupply(cast(ModelHub, _NeverCalled())),
+                supervisor=cast(OperationPort, _NeverCalled()),
+                logs=cast(LogReader, _NeverCalled()),
+                metrics=cast(MetricsSource, _NeverCalled()),
+                setup=cast(OperationPort, _NeverCalled()),
+                clients=cast(OperationPort, _NeverCalled()),
                 config_path=config_path,
             )
 
             status = backend.prepare(OperationRequest("status")).execute()
             shown = backend.prepare(OperationRequest("config.show")).execute()
 
-            self.assertEqual(status["services"], [])
-            self.assertEqual(shown["state"], "uninitialized")
-            self.assertIn("mlxctl setup", shown["next_actions"])
-            self.assertFalse(config_path.exists())
+            assert status["services"] == []
+            assert shown["state"] == "uninitialized"
+            assert isinstance(shown["next_actions"], (list, tuple, Mapping, str))
+            assert "mlxctl setup" in shown["next_actions"]
+            assert not config_path.exists()
 
     def test_service_list_keeps_desired_and_run_state_distinct(self) -> None:
         with TemporaryDirectory() as directory:
@@ -307,14 +322,14 @@ class LocalOperationBackendTests(unittest.TestCase):
 
             result = backend.prepare(OperationRequest("service.list")).execute()
 
-            self.assertEqual(
-                [item["name"] for item in result["items"]], ["chat", "coding"]
-            )
+            assert isinstance(result["items"], (list, tuple))
+            assert [item["name"] for item in result["items"]] == ["chat", "coding"]
             coding = next(item for item in result["items"] if item["name"] == "coding")
-            self.assertTrue(coding["desired"]["pinned"])
-            self.assertEqual(coding["run"]["id"], "run-1")
+            assert coding["desired"]["pinned"]
+            assert coding["run"]["id"] == "run-1"
+            assert isinstance(result["items"], (list, tuple))
             chat = next(item for item in result["items"] if item["name"] == "chat")
-            self.assertIsNone(chat["run"])
+            assert chat["run"] is None
 
     def test_diagnostic_queries_have_distinct_user_facing_results(self) -> None:
         with TemporaryDirectory() as directory:
@@ -366,23 +381,28 @@ class LocalOperationBackendTests(unittest.TestCase):
                 OperationRequest("service.check", {"resource": "coding"})
             ).execute()
 
-            self.assertNotIn("checks", status)
-            self.assertEqual(check["checks"][0]["name"], "supervisor")
-            self.assertFalse(doctor["healthy"])
-            self.assertEqual(
-                {issue["code"] for issue in doctor["issues"]},
-                {"gateway_drift", "service_unhealthy"},
-            )
-            self.assertIn(("client.inspect", {"client": "codex"}), clients.calls)
-            self.assertEqual(supervisor["operations"][0]["id"], "job-1")
-            self.assertEqual(gateway_status["route_count"], 2)
-            self.assertNotIn("routes", gateway_status)
-            self.assertEqual(len(gateway_inspect["routes"]), 2)
-            self.assertEqual(
-                {item["service"] for item in routes["items"]}, {"chat", "coding"}
-            )
-            self.assertEqual(runtime["items"][0]["state"], "missing")
-            self.assertEqual(service["checks"][2]["state"], "unavailable")
+            assert "checks" not in status
+            assert isinstance(check["checks"], (list, tuple))
+            assert check["checks"][0]["name"] == "supervisor"
+            assert not doctor["healthy"]
+            assert isinstance(doctor["issues"], (list, tuple))
+            assert {issue["code"] for issue in doctor["issues"]} == {
+                "gateway_drift",
+                "service_unhealthy",
+            }
+            assert ("client.inspect", {"client": "codex"}) in clients.calls
+            assert isinstance(supervisor["operations"], (list, tuple))
+            assert supervisor["operations"][0]["id"] == "job-1"
+            assert gateway_status["route_count"] == 2
+            assert "routes" not in gateway_status
+            assert isinstance(gateway_inspect["routes"], (list, tuple, Mapping, str))
+            assert len(gateway_inspect["routes"]) == 2
+            assert isinstance(routes["items"], (list, tuple))
+            assert {item["service"] for item in routes["items"]} == {"chat", "coding"}
+            assert isinstance(runtime["items"], (list, tuple))
+            assert runtime["items"][0]["state"] == "missing"
+            assert isinstance(service["checks"], (list, tuple))
+            assert service["checks"][2]["state"] == "unavailable"
 
     def test_doctor_reports_codex_context_drift_from_service_cap(self) -> None:
         config = (
@@ -405,25 +425,24 @@ class LocalOperationBackendTests(unittest.TestCase):
 
             doctor = backend.prepare(OperationRequest("doctor")).execute()
 
-            self.assertIn(
-                "codex_context_drift",
-                {issue["code"] for issue in doctor["issues"]},
-            )
-            self.assertNotIn(
-                "codex_catalog_unknown",
-                {issue["code"] for issue in doctor["issues"]},
-            )
+            assert isinstance(doctor["issues"], (list, tuple))
+            assert "codex_context_drift" in {
+                issue["code"] for issue in doctor["issues"]
+            }
+            assert "codex_catalog_unknown" not in {
+                issue["code"] for issue in doctor["issues"]
+            }
 
     def test_strict_resource_lookup_reports_unknown_service(self) -> None:
         with TemporaryDirectory() as directory:
             backend, _ = self._backend(Path(directory))
 
-            with self.assertRaises(ApplicationError) as raised:
+            with pytest.raises(ApplicationError) as raised:
                 backend.prepare(
                     OperationRequest("service.inspect", {"resource": "missing"})
                 ).execute()
 
-            self.assertEqual(raised.exception.code, "resource_not_found")
+            assert raised.value.code == "resource_not_found"
 
     def test_empty_metrics_are_reported_as_absent_not_invented(self) -> None:
         with TemporaryDirectory() as directory:
@@ -432,14 +451,14 @@ class LocalOperationBackendTests(unittest.TestCase):
 
             result = backend.prepare(OperationRequest("metrics")).execute()
 
-            self.assertEqual(result["items"], [])
-            self.assertEqual(result["evidence"], ["no-metrics-observed"])
-            self.assertEqual(metrics.calls, [("all", None)])
+            assert result["items"] == []
+            assert result["evidence"] == ["no-metrics-observed"]
+            assert metrics.calls == [("all", None)]
 
             backend.prepare(
                 OperationRequest("metrics", {"resource": "coding"})
             ).execute()
-            self.assertEqual(metrics.calls[-1], ("all", "coding"))
+            assert metrics.calls[-1] == ("all", "coding")
 
     def test_model_search_uses_the_cli_source_and_install_derives_alias(self) -> None:
         with TemporaryDirectory() as directory:
@@ -462,9 +481,9 @@ class LocalOperationBackendTests(unittest.TestCase):
                 )
             ).execute()
 
-            self.assertIn(("search", "Qwen", "broad", 3), supply.calls)
+            assert ("search", "Qwen", "broad", 3) in supply.calls
             install = next(call for call in supply.calls if call[0] == "install")
-            self.assertEqual(install[1]["alias"], "Qwen-OptiQ")
+            assert install[1]["alias"] == "Qwen-OptiQ"
 
     def test_model_install_executes_the_exact_revision_bound_in_preview(self) -> None:
         with TemporaryDirectory() as directory:
@@ -493,7 +512,7 @@ class LocalOperationBackendTests(unittest.TestCase):
             execution = next(
                 call for call in supply.calls if call[0] == "model.install"
             )
-            self.assertEqual(execution[1]["revision"], "c" * 40)
+            assert execution[1]["revision"] == "c" * 40
 
     def test_model_adopt_binds_execution_to_previewed_snapshot_fingerprint(
         self,
@@ -523,8 +542,8 @@ class LocalOperationBackendTests(unittest.TestCase):
             ).execute()
 
             execution = next(call for call in supply.calls if call[0] == "model.adopt")
-            self.assertEqual(execution[1]["snapshot_fingerprint"], "f" * 64)
-            self.assertEqual(execution[1]["path"], "/Volumes/models/qwen")
+            assert execution[1]["snapshot_fingerprint"] == "f" * 64
+            assert execution[1]["path"] == "/Volumes/models/qwen"
 
     def test_model_trust_is_exact_revision_and_runtime_scoped(self) -> None:
         with TemporaryDirectory() as directory:
@@ -542,15 +561,17 @@ class LocalOperationBackendTests(unittest.TestCase):
             ).execute()
 
             trust = result["resource"]
-            self.assertEqual(trust["model_installation"], "qwen")
-            self.assertEqual(trust["runtime_installation"], "optiq-0.2.18")
-            self.assertEqual(trust["revision"], "a" * 40)
-            self.assertEqual(trust["accepted_risks"], ["custom_code"])
-            self.assertIsNotNone(
+            assert isinstance(trust, Mapping)
+            assert trust["model_installation"] == "qwen"
+            assert trust["runtime_installation"] == "optiq-0.2.18"
+            assert trust["revision"] == "a" * 40
+            assert trust["accepted_risks"] == ["custom_code"]
+            assert (
                 state.snapshot("trust", "qwen@optiq-0.2.18", version="a" * 40)
+                is not None
             )
 
-            with self.assertRaisesRegex(ApplicationError, "JSON array"):
+            with pytest.raises(ApplicationError, match="JSON array"):
                 backend.prepare(
                     OperationRequest(
                         "model.trust",
@@ -579,9 +600,10 @@ class LocalOperationBackendTests(unittest.TestCase):
                 )
             ).execute()
 
-            self.assertEqual(intelligence.calls[0][0], "mlx-community/New-OptiQ")
-            self.assertEqual(intelligence.calls[0][2]["context_tokens"], 65536)
-            self.assertEqual(result["resource"]["identity"]["commit_sha"], "b" * 40)
+            assert intelligence.calls[0][0] == "mlx-community/New-OptiQ"
+            assert intelligence.calls[0][2]["context_tokens"] == 65536
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["identity"]["commit_sha"] == "b" * 40
 
     def test_model_inspect_summarizes_large_repository_manifest(self) -> None:
         class LargeManifestIntelligence(_ModelIntelligence):
@@ -610,12 +632,14 @@ class LocalOperationBackendTests(unittest.TestCase):
             ).execute()
 
             resource = result["resource"]
-            self.assertEqual(resource["repository_file_count"], 5_000)
-            self.assertEqual(len(resource["repository_manifest_sha256"]), 64)
-            self.assertNotIn("repository_files", resource)
-            self.assertLess(
-                len(json.dumps(result, separators=(",", ":")).encode()),
-                MAX_FRAME_BYTES,
+            assert isinstance(resource, Mapping)
+            assert resource["repository_file_count"] == 5_000
+            assert len(resource["repository_manifest_sha256"]) == 64
+            assert isinstance(resource, (list, tuple, Mapping, str))
+            assert "repository_files" not in resource
+            assert (
+                len(json.dumps(result, separators=(",", ":")).encode())
+                < MAX_FRAME_BYTES
             )
 
     def test_config_import_reads_a_bounded_explicit_source(self) -> None:
@@ -638,7 +662,8 @@ class LocalOperationBackendTests(unittest.TestCase):
                 )
             ).execute()
 
-            self.assertEqual(result["resource"]["value"]["gateway"]["port"], 9000)
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["value"]["gateway"]["port"] == 9000
 
     def test_every_confirmed_mutation_is_bound_to_current_config_revision(
         self,
@@ -652,7 +677,7 @@ class LocalOperationBackendTests(unittest.TestCase):
                 lambda document: document["gateway"].update({"port": 9000})
             )
 
-            with self.assertRaisesRegex(ApplicationError, "plan changed") as caught:
+            with pytest.raises(ApplicationError, match="plan changed") as caught:
                 backend.prepare(
                     OperationRequest(
                         "service.remove",
@@ -663,7 +688,7 @@ class LocalOperationBackendTests(unittest.TestCase):
                         },
                     )
                 )
-            self.assertEqual(caught.exception.code, "stale_plan")
+            assert caught.value.code == "stale_plan"
 
     def test_local_service_edit_has_preview_and_never_uses_supervisor(self) -> None:
         with TemporaryDirectory() as directory:
@@ -678,14 +703,16 @@ class LocalOperationBackendTests(unittest.TestCase):
             )
             result = prepared.execute()
 
-            self.assertFalse(prepared.requires_supervisor)
-            self.assertTrue(prepared.events[0]["confirmation_required"])
-            self.assertEqual(result["preview"]["operation"], "service.edit")
-            self.assertEqual(supervisor.calls, [])
+            assert not prepared.requires_supervisor
+            assert prepared.events[0]["confirmation_required"]
+            assert isinstance(result["preview"], Mapping)
+            assert result["preview"]["operation"] == "service.edit"
+            assert supervisor.calls == []
             inspected = backend.prepare(
                 OperationRequest("service.inspect", {"resource": "chat"})
             ).execute()
-            self.assertTrue(inspected["resource"]["desired"]["pinned"])
+            assert isinstance(inspected["resource"], Mapping)
+            assert inspected["resource"]["desired"]["pinned"]
 
     def test_first_local_mutation_initializes_minimal_desired_state(self) -> None:
         with TemporaryDirectory() as directory:
@@ -697,9 +724,10 @@ class LocalOperationBackendTests(unittest.TestCase):
                 OperationRequest("gateway.configure", {"port": 9001})
             ).execute()
 
-            self.assertTrue((root / "config.toml").exists())
+            assert (root / "config.toml").exists()
             shown = backend.prepare(OperationRequest("config.show")).execute()
-            self.assertEqual(shown["resource"]["gateway"]["port"], 9001)
+            assert isinstance(shown["resource"], Mapping)
+            assert shown["resource"]["gateway"]["port"] == 9001
 
     def test_service_remove_drains_and_stops_before_deleting_desired_state(
         self,
@@ -713,14 +741,13 @@ class LocalOperationBackendTests(unittest.TestCase):
             )
             result = prepared.execute()
 
-            self.assertTrue(prepared.requires_supervisor)
-            self.assertEqual(
-                [call[0] for call in supervisor.calls],
-                ["service.remove"],
-            )
-            self.assertEqual(result["resource"]["service"], "chat")
+            assert prepared.requires_supervisor
+            assert [call[0] for call in supervisor.calls] == ["service.remove"]
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["service"] == "chat"
             remaining = backend.prepare(OperationRequest("service.list")).execute()
-            self.assertNotIn("chat", {item["name"] for item in remaining["items"]})
+            assert isinstance(remaining["items"], (list, tuple))
+            assert "chat" not in {item["name"] for item in remaining["items"]}
 
     def test_model_uninstall_removes_unreferenced_alias_with_installation(self) -> None:
         with TemporaryDirectory() as directory:
@@ -731,8 +758,9 @@ class LocalOperationBackendTests(unittest.TestCase):
             ).execute()
 
             shown = backend.prepare(OperationRequest("config.show")).execute()
-            self.assertEqual(shown["resource"]["models"], {})
-            self.assertEqual(shown["resource"]["aliases"], {})
+            assert isinstance(shown["resource"], Mapping)
+            assert shown["resource"]["models"] == {}
+            assert shown["resource"]["aliases"] == {}
 
     def test_model_uninstall_only_unregisters_adopted_external_bytes(self) -> None:
         with TemporaryDirectory() as directory:
@@ -752,9 +780,10 @@ class LocalOperationBackendTests(unittest.TestCase):
                 OperationRequest("model.uninstall", {"resource": "coding"})
             ).execute()
 
-            self.assertEqual(marker.read_bytes(), b"externally owned")
+            assert marker.read_bytes() == b"externally owned"
             shown = backend.prepare(OperationRequest("config.show")).execute()
-            self.assertEqual(shown["resource"]["models"], {})
+            assert isinstance(shown["resource"], Mapping)
+            assert shown["resource"]["models"] == {}
 
     def test_model_inspect_reports_the_adopted_external_snapshot(self) -> None:
         with TemporaryDirectory() as directory:
@@ -777,15 +806,15 @@ class LocalOperationBackendTests(unittest.TestCase):
                 OperationRequest("model.inspect", {"resource": "coding"})
             ).execute()
 
-            self.assertEqual(
-                result["resource"]["installation"]["provenance"],
-                "external-adopted",
+            assert isinstance(result["resource"], Mapping)
+            assert (
+                result["resource"]["installation"]["provenance"] == "external-adopted"
             )
-            self.assertEqual(
-                result["resource"]["installation"]["snapshot"]["path"],
-                str(snapshot),
+            assert result["resource"]["installation"]["snapshot"]["path"] == str(
+                snapshot
             )
-            self.assertIn("external-adopted-snapshot", result["evidence"])
+            assert isinstance(result["evidence"], (list, tuple, Mapping, str))
+            assert "external-adopted-snapshot" in result["evidence"]
 
     def test_service_create_uses_the_public_service_argument(self) -> None:
         with TemporaryDirectory() as directory:
@@ -804,7 +833,8 @@ class LocalOperationBackendTests(unittest.TestCase):
             ).execute()
 
             listed = backend.prepare(OperationRequest("service.list")).execute()
-            self.assertIn("assistant", [item["name"] for item in listed["items"]])
+            assert isinstance(listed["items"], (list, tuple))
+            assert "assistant" in [item["name"] for item in listed["items"]]
 
     def test_live_lifecycle_calls_only_supervisor_port(self) -> None:
         with TemporaryDirectory() as directory:
@@ -823,13 +853,12 @@ class LocalOperationBackendTests(unittest.TestCase):
             )
             result = prepared.execute()
 
-            self.assertTrue(prepared.requires_supervisor)
-            self.assertEqual(
-                supervisor.calls, [("service.start", {"resource": "coding"})]
-            )
-            self.assertEqual(runtime.calls, [])
-            self.assertEqual(model.calls, [])
-            self.assertEqual(result["resource"]["run_id"], "run-2")
+            assert prepared.requires_supervisor
+            assert supervisor.calls == [("service.start", {"resource": "coding"})]
+            assert runtime.calls == []
+            assert model.calls == []
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["run_id"] == "run-2"
 
     def test_client_probe_content_is_forwarded_but_never_persisted(self) -> None:
         with TemporaryDirectory() as directory:
@@ -843,9 +872,10 @@ class LocalOperationBackendTests(unittest.TestCase):
                 )
             ).execute()
 
-            self.assertEqual(result["resource"]["response"], "ephemeral")
-            self.assertEqual(state.operations(), ())
-            self.assertEqual(state.events(), ())
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["response"] == "ephemeral"
+            assert state.operations() == ()
+            assert state.events() == ()
 
     def test_setup_prepares_exact_plan_and_defers_activation_to_remote_steps(
         self,
@@ -856,9 +886,9 @@ class LocalOperationBackendTests(unittest.TestCase):
 
             prepared = backend.prepare(OperationRequest("setup"))
 
-            self.assertFalse(prepared.requires_supervisor)
-            self.assertEqual(prepared.events[0]["plan_fingerprint"], "sha256:exact")
-            self.assertEqual(setup.calls, [])
+            assert not prepared.requires_supervisor
+            assert prepared.events[0]["plan_fingerprint"] == "sha256:exact"
+            assert setup.calls == []
 
     def test_product_removal_previews_exact_plan_without_starting_supervisor(
         self,
@@ -869,13 +899,12 @@ class LocalOperationBackendTests(unittest.TestCase):
 
             prepared = backend.prepare(OperationRequest("remove"))
 
-            self.assertFalse(prepared.requires_supervisor)
-            self.assertEqual(
-                prepared.events[0]["plan_fingerprint"], "sha256:remove-exact"
-            )
+            assert not prepared.requires_supervisor
+            assert prepared.events[0]["plan_fingerprint"] == "sha256:remove-exact"
             result = prepared.execute()
-            self.assertTrue(result["resource"]["removed"])
-            self.assertEqual(setup.calls, [("remove", {})])
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["removed"]
+            assert setup.calls == [("remove", {})]
 
     def test_runtime_and_model_jobs_call_only_their_supply_ports(self) -> None:
         with TemporaryDirectory() as directory:
@@ -899,11 +928,13 @@ class LocalOperationBackendTests(unittest.TestCase):
                 )
             ).execute()
 
-            self.assertEqual(runtime_result["resource"]["job"], "runtime-job")
-            self.assertEqual(model_result["resource"]["job"], "model-job")
-            self.assertEqual(runtime.calls[0][0], "runtime.update")
-            self.assertEqual(model.calls[0][0], "model.repair")
-            self.assertEqual(supervisor.calls, [])
+            assert isinstance(runtime_result["resource"], Mapping)
+            assert runtime_result["resource"]["job"] == "runtime-job"
+            assert isinstance(model_result["resource"], Mapping)
+            assert model_result["resource"]["job"] == "model-job"
+            assert runtime.calls[0][0] == "runtime.update"
+            assert model.calls[0][0] == "model.repair"
+            assert supervisor.calls == []
 
     def test_model_verify_uses_exact_installed_revision_and_cache(self) -> None:
         with TemporaryDirectory() as directory:
@@ -914,11 +945,14 @@ class LocalOperationBackendTests(unittest.TestCase):
                 OperationRequest("model.verify", {"resource": "coding"})
             ).execute()
 
-            self.assertEqual(result["resource"]["status"], "complete")
-            self.assertIn(("verify", "qwen"), model.calls)
-            self.assertEqual(result["evidence"], ["cache-completeness"])
+            assert isinstance(result["resource"], Mapping)
+            assert result["resource"]["status"] == "complete"
+            assert ("verify", "qwen") in model.calls
+            assert result["evidence"] == ["cache-completeness"]
 
-    def test_every_catalogue_entry_prepares_with_realistic_prerequisites(self) -> None:
+    def test_every_catalogue_entry_prepares_with_realistic_prerequisites(
+        self, subtests: pytest.Subtests
+    ) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             backend, state = self._backend(
@@ -933,13 +967,15 @@ class LocalOperationBackendTests(unittest.TestCase):
             )
             state.put_operation({"id": "job-1", "state": "running"})
             for name in build_operation_catalogue():
-                with self.subTest(operation=name):
+                with subtests.test(operation=name):
                     prepared = backend.prepare(
                         OperationRequest(name, self._parameters(name))
                     )
-                    self.assertIsNotNone(prepared.execute)
+                    assert prepared.execute is not None
 
-    def test_every_query_executes_without_supervisor_activation(self) -> None:
+    def test_every_query_executes_without_supervisor_activation(
+        self, subtests: pytest.Subtests
+    ) -> None:
         with TemporaryDirectory() as directory:
             backend, state = self._backend(
                 Path(directory),
@@ -955,16 +991,18 @@ class LocalOperationBackendTests(unittest.TestCase):
             for name, operation in build_operation_catalogue().items():
                 if operation.kind is not OperationKind.QUERY:
                     continue
-                with self.subTest(operation=name):
+                with subtests.test(operation=name):
                     prepared = backend.prepare(
                         OperationRequest(name, self._parameters(name))
                     )
                     result = prepared.execute()
-                    self.assertFalse(prepared.requires_supervisor)
-                    self.assertEqual(result["schema_version"], 1)
-                    self.assertEqual(result["operation"], name)
+                    assert not prepared.requires_supervisor
+                    assert result["schema_version"] == 1
+                    assert result["operation"] == name
 
-    def test_mutation_categories_have_preview_and_exact_activation_policy(self) -> None:
+    def test_mutation_categories_have_preview_and_exact_activation_policy(
+        self, subtests: pytest.Subtests
+    ) -> None:
         supervisor_backed = {
             "supervisor.start",
             "supervisor.stop",
@@ -998,22 +1036,18 @@ class LocalOperationBackendTests(unittest.TestCase):
             for name, operation in build_operation_catalogue().items():
                 if operation.kind is not OperationKind.MUTATION:
                     continue
-                with self.subTest(operation=name):
+                with subtests.test(operation=name):
                     prepared = backend.prepare(
                         OperationRequest(name, self._parameters(name))
                     )
-                    self.assertEqual(
-                        prepared.requires_supervisor, name in supervisor_backed
+                    assert prepared.requires_supervisor == (name in supervisor_backed)
+                    assert prepared.events[0]["phase"] == "preview"
+                    assert str(prepared.events[0]["plan_fingerprint"]).startswith(
+                        "sha256:"
                     )
-                    self.assertEqual(prepared.events[0]["phase"], "preview")
-                    self.assertTrue(
-                        str(prepared.events[0]["plan_fingerprint"]).startswith(
-                            "sha256:"
-                        )
-                    )
-                    self.assertEqual(
-                        prepared.events[0]["confirmation_required"],
-                        operation.confirmation,
+                    assert (
+                        prepared.events[0]["confirmation_required"]
+                        == operation.confirmation
                     )
 
     @staticmethod
@@ -1047,7 +1081,3 @@ class LocalOperationBackendTests(unittest.TestCase):
         if name == "config.restore":
             return {"revision": "a" * 64}
         return {}
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import stat
 import tempfile
-import unittest
 from pathlib import Path
 
 from mlxctl.application.dispatch import OperationResult
@@ -12,6 +11,7 @@ from mlxctl.infrastructure.host_integration import (
     PrivateLogReader,
     StateMetricsSource,
 )
+from mlxctl.infrastructure.launchd import LaunchdStatus
 
 
 class _Launchd:
@@ -22,19 +22,17 @@ class _Launchd:
 
     def status(self):
         self.calls.append("status")
-        return type(
-            "Status",
-            (),
-            {"registered": self.registered, "running": self.running},
-        )()
+        return LaunchdStatus(registered=self.registered, running=self.running)
 
     def register(self):
         self.calls.append("register")
         self.registered = True
+        return LaunchdStatus(registered=self.registered, running=self.running)
 
     def kickstart(self):
         self.calls.append("kickstart")
         self.running = True
+        return LaunchdStatus(registered=self.registered, running=self.running)
 
 
 class _Dispatcher:
@@ -56,7 +54,7 @@ class _State:
         return tuple(item for item in items if kind is None or item["kind"] == kind)
 
 
-class HostIntegrationTests(unittest.TestCase):
+class TestHostIntegration:
     def test_activator_registers_and_starts_only_when_explicitly_called(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             socket_path = Path(directory) / "mlxd.sock"
@@ -73,10 +71,10 @@ class HostIntegrationTests(unittest.TestCase):
                 sleep=sleep,
             )
 
-            self.assertEqual(launchd.calls, [])
+            assert launchd.calls == []
             activator.activate()
 
-            self.assertEqual(launchd.calls, ["status", "register", "kickstart"])
+            assert launchd.calls == ["status", "register", "kickstart"]
 
     def test_activator_does_not_reregister_an_existing_job(self) -> None:
         launchd = _Launchd(registered=True, running=True)
@@ -88,7 +86,7 @@ class HostIntegrationTests(unittest.TestCase):
 
         activator.activate()
 
-        self.assertEqual(launchd.calls, ["status"])
+        assert launchd.calls == ["status"]
 
     def test_snapshot_provider_uses_real_status_without_mutation(self) -> None:
         dispatcher = _Dispatcher(
@@ -115,12 +113,12 @@ class HostIntegrationTests(unittest.TestCase):
 
         snapshot = LocalSnapshotProvider(dispatcher).snapshot()
 
-        self.assertEqual(dispatcher.requests[0].name, "status")
-        self.assertEqual(snapshot.supervisor, "running")
-        self.assertIn("127.0.0.1:8766", snapshot.gateway)
-        self.assertEqual(snapshot.pressure, "warning")
-        self.assertEqual(snapshot.active_operations, 1)
-        self.assertEqual(snapshot.services[0].runtime, "optiq@0.3.3")
+        assert dispatcher.requests[0].name == "status"
+        assert snapshot.supervisor == "running"
+        assert "127.0.0.1:8766" in snapshot.gateway
+        assert snapshot.pressure == "warning"
+        assert snapshot.active_operations == 1
+        assert snapshot.services[0].runtime == "optiq@0.3.3"
 
     def test_private_log_reader_bounds_files_and_rejects_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -132,17 +130,13 @@ class HostIntegrationTests(unittest.TestCase):
 
             rows = PrivateLogReader(root, max_lines=2).read("service", "coding")
 
-            self.assertEqual([row["message"] for row in rows], ["two", "three"])
-            self.assertTrue(stat.S_ISREG(log.stat().st_mode))
+            assert [row["message"] for row in rows] == ["two", "three"]
+            assert stat.S_ISREG(log.stat().st_mode)
 
     def test_metrics_adapter_filters_scope_and_resource(self) -> None:
         metrics = StateMetricsSource(_State())
 
         rows = metrics.query("service", "coding")
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["kind"], "request")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "request"

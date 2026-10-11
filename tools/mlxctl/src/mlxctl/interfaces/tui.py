@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, cast
 
 from textual import events, work
 from textual.app import App, ComposeResult
+from textual.binding import BindingType
 from textual.command import Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Checkbox, Footer, Input, Label, Select, Static
@@ -71,7 +72,7 @@ class MlxctlApp(App[None]):
     SUB_TITLE = "local inference control room"
     COMMANDS = App.COMMANDS | {OperationCommands}
     COMMAND_PALETTE_BINDING = "ctrl+p"
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         ("ctrl+p", "command_palette", "Commands"),
         ("question_mark", "help", "Help"),
         ("q", "quit", "Quit"),
@@ -541,7 +542,9 @@ class MlxctlApp(App[None]):
             elif isinstance(control, Select):
                 value = None if control.value is Select.BLANK else control.value
                 if parameter.value_type == "tristate_boolean":
-                    value = {"unchanged": None, "true": True, "false": False}[value]
+                    value = {"unchanged": None, "true": True, "false": False}[
+                        cast(str, value)
+                    ]
             elif isinstance(control, Input):
                 value = control.value.strip() or None
                 if value is not None and parameter.value_type == "integer":
@@ -751,7 +754,13 @@ class MlxctlApp(App[None]):
             rows.extend(cls._render_field(key, item))
         evidence = value.get("evidence")
         if evidence:
-            rows.extend(("", "Evidence", *[f"  ✓ {item}" for item in evidence]))
+            rows.extend(
+                (
+                    "",
+                    "Evidence",
+                    *[f"  ✓ {item}" for item in cast(Iterable[str], evidence)],
+                )
+            )
         return "\n".join(rows) if rows else "No information returned."
 
     @classmethod

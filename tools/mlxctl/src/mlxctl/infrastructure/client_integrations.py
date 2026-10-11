@@ -9,12 +9,12 @@ import os
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
 from types import MappingProxyType
-from typing import TypeVar
+from typing import NotRequired, TypedDict, TypeVar, cast
 from urllib.parse import urlsplit
 
 import tomlkit
@@ -229,6 +229,20 @@ class ClientRemovalResult:
     skipped_paths: tuple[tuple[str, ...], ...] = ()
 
 
+class _OwnedField(TypedDict):
+    path: list[str]
+    before_present: object
+    before: NotRequired[object]
+    before_line: NotRequired[object]
+    after: NotRequired[object]
+    after_digest: NotRequired[str]
+
+
+def _owned_fields(manifest: Mapping[str, object]) -> Sequence[_OwnedField]:
+    # This declares the private writer/consumer shape; the loader checks only the list.
+    return cast(Sequence[_OwnedField], manifest.get("fields", []))
+
+
 class ClientIntegrationConflict(RuntimeError):
     """A managed field or snapshot changed outside mlxctl."""
 
@@ -345,10 +359,10 @@ class CodexClientIntegration:
             prior_manifest.get("catalog"), dict
         )
         prior_fields = {
-            tuple(item["path"]): item for item in prior_manifest.get("fields", [])
+            tuple(item["path"]): item for item in _owned_fields(prior_manifest)
         }
         changes: list[SemanticChange] = []
-        owned: list[dict[str, object]] = []
+        owned: list[_OwnedField] = []
         for path, previous in prior_fields.items():
             if path in desired:
                 continue
@@ -402,7 +416,7 @@ class CodexClientIntegration:
             return ClientApplyResult(False, (), self.backup_path, self.manifest_path)
 
         rendered = document.as_string().encode()
-        manifest = {
+        manifest: dict[str, object] = {
             "schema_version": 1,
             "integration": "codex",
             "config_path": str(self.config_path),
@@ -421,7 +435,10 @@ class CodexClientIntegration:
             "fields": owned,
         }
         if catalog_rendered is not None:
-            previous_catalog = prior_manifest.get("catalog", {})
+            assert configuration.codex_model is not None
+            previous_catalog = cast(
+                Mapping[str, object], prior_manifest.get("catalog", {})
+            )
             manifest["catalog"] = {
                 "path": str(self.catalog_path),
                 "backup_path": str(self.catalog_backup_path),
@@ -488,7 +505,7 @@ class CodexClientIntegration:
         changes: list[SemanticChange] = []
         skipped: list[tuple[str, ...]] = []
         retained = []
-        for item in manifest["fields"]:
+        for item in _owned_fields(manifest):
             path = tuple(item["path"])
             present, current = _toml_lookup(document, path)
             if not present or _plain(current) != item.get("after"):
@@ -581,7 +598,7 @@ class CodexClientIntegration:
                 "next_actions": ["mlxctl client configure codex"],
             }
         config_document = _load_toml(self.config_path)
-        for item in manifest.get("fields", []):
+        for item in _owned_fields(manifest):
             path = tuple(item["path"])
             present, current = _toml_lookup(config_document, path)
             if not present or _plain(current) != item.get("after"):
@@ -649,7 +666,7 @@ class CodexClientIntegration:
     def _finish_removal(
         self,
         manifest: dict[str, object],
-        retained: list[dict[str, object]],
+        retained: list[_OwnedField],
         *,
         keep_catalog: bool = False,
     ) -> None:
@@ -775,10 +792,10 @@ class HindsightClientIntegration:
         desired = self._desired(configuration)
         prior_manifest = self._manifest(optional=True)
         prior_fields = {
-            tuple(item["path"]): item for item in prior_manifest.get("fields", [])
+            tuple(item["path"]): item for item in _owned_fields(prior_manifest)
         }
         changes: list[SemanticChange] = []
-        owned: list[dict[str, object]] = []
+        owned: list[_OwnedField] = []
         for path, previous in prior_fields.items():
             if path[0] in desired:
                 continue
@@ -844,7 +861,7 @@ class HindsightClientIntegration:
             return ClientApplyResult(False, (), self.backup_path, self.manifest_path)
 
         rendered = env.render().encode()
-        manifest = {
+        manifest: dict[str, object] = {
             "schema_version": 1,
             "integration": "hindsight",
             "config_path": str(self.config_path),
@@ -888,7 +905,7 @@ class HindsightClientIntegration:
         changes: list[SemanticChange] = []
         skipped: list[tuple[str, ...]] = []
         retained = []
-        for item in manifest["fields"]:
+        for item in _owned_fields(manifest):
             path = tuple(item["path"])
             present, current, _line = env.lookup(path[0])
             matches = (
@@ -1176,7 +1193,7 @@ def _toml_lookup(document: object, path: tuple[str, ...]) -> tuple[bool, object]
 
 
 def _toml_set(document: TOMLDocument, path: tuple[str, ...], value: object) -> None:
-    current = document
+    current: MutableMapping[str, object] = document
     for key in path[:-1]:
         if key not in current:
             current[key] = tomlkit.table()
@@ -1185,24 +1202,24 @@ def _toml_set(document: TOMLDocument, path: tuple[str, ...], value: object) -> N
             raise ClientIntegrationConflict(
                 f"Codex field {'.'.join(path[:-1])} is not a table"
             )
-        current = child
+        current = cast(MutableMapping[str, object], child)
     current[path[-1]] = value
 
 
 def _toml_delete(document: TOMLDocument, path: tuple[str, ...]) -> None:
-    parents: list[tuple[object, str]] = []
+    parents: list[tuple[MutableMapping[str, object], str]] = []
     current: object = document
     for key in path[:-1]:
         if not isinstance(current, Mapping) or key not in current:
             return
-        parents.append((current, key))
+        parents.append((cast(MutableMapping[str, object], current), key))
         current = current[key]
     if isinstance(current, Mapping):
-        del current[path[-1]]
+        del cast(MutableMapping[str, object], current)[path[-1]]
     for parent, key in reversed(parents):
-        child = parent[key]  # type: ignore[index]
+        child = parent[key]
         if isinstance(child, Mapping) and not child:
-            del parent[key]  # type: ignore[index]
+            del parent[key]
         else:
             break
 
@@ -1399,7 +1416,7 @@ def _safe_target(path: Path, label: str) -> None:
 
 def _plain(value: object) -> object:
     if hasattr(value, "unwrap"):
-        return value.unwrap()  # type: ignore[no-any-return,union-attr]
+        return value.unwrap()
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):

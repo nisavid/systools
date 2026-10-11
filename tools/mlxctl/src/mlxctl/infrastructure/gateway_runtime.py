@@ -8,6 +8,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import Protocol
 
+from starlette.applications import Starlette
+
 from mlxctl.infrastructure.gateway import (
     GatewayRequestProfile,
     GatewayRoute,
@@ -23,7 +25,7 @@ class GatewayServer(Protocol):
     def run(self) -> None: ...
 
 
-ServerFactory = Callable[[object, str, int], GatewayServer]
+ServerFactory = Callable[[Starlette, str, int], GatewayServer]
 
 
 class GatewayRuntime:
@@ -124,7 +126,7 @@ class GatewayRuntime:
             previous = self._routes.get(service)
             self._routes[service] = GatewayRoute(
                 service=service,
-                state=state,  # type: ignore[arg-type]
+                state=state,
                 endpoint=endpoint,
                 model=previous.model if previous else None,
                 runtime=previous.runtime if previous else None,
@@ -219,7 +221,7 @@ class GatewayRuntime:
         self._metric_sink({"kind": "service_request", "scope": "service", **common})
 
 
-def _uvicorn_server(app: object, host: str, port: int) -> GatewayServer:
+def _uvicorn_server(app: Starlette, host: str, port: int) -> GatewayServer:
     import uvicorn
 
     config = uvicorn.Config(

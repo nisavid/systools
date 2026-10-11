@@ -33,14 +33,17 @@ paths and public URLs in committed prose.
 
 ## Validate the owning subproject
 
-Run Python checks for `tools/mlxctl/` from that directory:
+Use the declared uv version and run the locked checks for `tools/mlxctl/`
+from that directory:
 
 ```sh
-uv run python -m unittest discover -s tests
-uvx ruff check .
-uvx ruff format --check .
-uv build
+sh scripts/check.sh
+sh scripts/check-wheel.sh
 ```
+
+Read the development section in `tools/mlxctl/README.md` for toolchain
+selection, supported interpreters, and what these checks establish. Keep
+local and hosted validation on these same scripts.
 
 Changes to the deployment contract also require validation in the dotfiles
 repository and a scoped installation check.
