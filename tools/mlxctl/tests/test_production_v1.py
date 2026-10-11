@@ -1022,8 +1022,15 @@ class TestDaemonService:
             async def close(self):
                 return None
 
+        class RepeatedMaintenanceRouter(_FakeRouter):
+            def maintain(self):
+                result = super().maintain()
+                if sum(call[0] == "maintain" for call in self.calls) >= 2:
+                    self.request_stop()
+                return result
+
         def router_factory(request_stop):
-            router = _FakeRouter(request_stop)
+            router = RepeatedMaintenanceRouter(request_stop)
             routers.append(router)
             return cast(DaemonOperationRouter, router)
 
@@ -1035,9 +1042,6 @@ class TestDaemonService:
             ),
             maintenance_interval=0.01,
         )
-        task = asyncio.create_task(service.serve())
-        await asyncio.sleep(0.04)
-        routers[0].request_stop()
-        await asyncio.wait_for(task, timeout=1)
+        await asyncio.wait_for(service.serve(), timeout=1)
 
         assert sum(call[0] == "maintain" for call in routers[0].calls) >= 2
