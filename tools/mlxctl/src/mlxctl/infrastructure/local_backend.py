@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast, overload
 
 import tomlkit
 
@@ -27,6 +27,9 @@ from mlxctl.infrastructure.model_supply import (
 from mlxctl.infrastructure.runtime_supply import RuntimeCatalogue
 from mlxctl.infrastructure.state_store import OperationalStateStore
 
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
 
 class OperationPort(Protocol):
     """Own one family of supported-v1 mutations."""
@@ -46,6 +49,18 @@ class MetricsSource(Protocol):
     def query(
         self, scope: str, resource: str | None = None
     ) -> Sequence[Mapping[str, object]]: ...
+
+
+class _ServiceItem(TypedDict):
+    name: str
+    desired: Mapping[str, object]
+    run: Mapping[str, object] | None
+
+
+class _DiagnosticIssue(TypedDict):
+    code: str
+    message: str
+    next_actions: list[str]
 
 
 _SUPERVISOR_MUTATIONS = frozenset(
@@ -470,9 +485,12 @@ class LocalOperationBackend:
                                     )
                                 ),
                                 "next_actions": list(
-                                    integration.get(
-                                        "next_actions",
-                                        ["mlxctl client configure codex"],
+                                    cast(
+                                        Iterable[str],
+                                        integration.get(
+                                            "next_actions",
+                                            ["mlxctl client configure codex"],
+                                        ),
                                     )
                                 ),
                             }
@@ -670,8 +688,12 @@ class LocalOperationBackend:
                     )
                     for item in config.runtimes.values()
                 ),
-                context_tokens=int(request.parameters.get("context_tokens", 32768)),
-                concurrency=int(request.parameters.get("concurrency", 1)),
+                context_tokens=int(
+                    cast(int | str, request.parameters.get("context_tokens", 32768))
+                ),
+                concurrency=int(
+                    cast(int | str, request.parameters.get("concurrency", 1))
+                ),
             )
             resource = _plain_model_intelligence_report(report)
             evidence = ["exact-hub-metadata", "local-machine-inventory"]
@@ -700,7 +722,7 @@ class LocalOperationBackend:
         if name == "model.search":
             query = str(request.parameters.get("query", ""))
             mode = str(request.parameters.get("source", "curated"))
-            limit = int(request.parameters.get("limit", 20))
+            limit = int(cast(int | str, request.parameters.get("limit", 20)))
             return _result(
                 name,
                 items=[
@@ -827,9 +849,9 @@ class LocalOperationBackend:
         config: MlxctlConfig,
         supervisor: Mapping[str, object],
         gateway: Mapping[str, object],
-        services: Sequence[Mapping[str, object]],
-    ) -> list[dict[str, object]]:
-        issues: list[dict[str, object]] = []
+        services: Sequence[_ServiceItem],
+    ) -> list[_DiagnosticIssue]:
+        issues: list[_DiagnosticIssue] = []
         if supervisor.get("state") == "failed":
             issues.append(
                 {
@@ -850,7 +872,7 @@ class LocalOperationBackend:
         for item in services:
             run = item.get("run")
             if isinstance(run, Mapping) and run.get("state") in {"failed", "unhealthy"}:
-                name = str(item.get("name", "unknown"))
+                name = item.get("name", "unknown")
                 issues.append(
                     {
                         "code": "service_unhealthy",
@@ -915,7 +937,7 @@ class LocalOperationBackend:
                     "integration": _plain(value),
                 },
                 evidence=["desired-state", "managed-client-files"],
-                next_actions=list(value.get("next_actions", [])),
+                next_actions=list(cast(Iterable[str], value.get("next_actions", []))),
             )
         return _result(
             request.name,
@@ -996,8 +1018,7 @@ class LocalOperationBackend:
         *,
         operation: str | None = None,
     ) -> Mapping[str, object]:
-        source = self._logs if kind == "logs" else self._metrics
-        method = source.read if kind == "logs" else source.query
+        method = self._logs.read if kind == "logs" else self._metrics.query
         items = [_plain(item) for item in method(scope, resource)]
         return _result(
             operation or kind,
@@ -1325,7 +1346,7 @@ class LocalOperationBackend:
             self._config_store.import_text("schema_version = 1\n")
         return _plain(self._config_store.edit(edit))
 
-    def _service_items(self, config: MlxctlConfig) -> list[dict[str, object]]:
+    def _service_items(self, config: MlxctlConfig) -> list[_ServiceItem]:
         runs: dict[str, Mapping[str, object]] = {}
         for run in self._state_store.snapshots("service_run"):
             service = str(run.get("service", run.get("service_name", "")))
@@ -1423,11 +1444,18 @@ def _plain_model_intelligence_report(report: object) -> dict[str, object]:
     return result
 
 
+@overload
+def _plain(value: DataclassInstance | Mapping[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _plain(value: object) -> object: ...
+
+
 def _plain(value: object) -> object:
     if hasattr(value, "__dataclass_fields__"):
         return {
-            name: _plain(getattr(value, name))
-            for name in value.__dataclass_fields__  # type: ignore[attr-defined]
+            name: _plain(getattr(value, name)) for name in value.__dataclass_fields__
         }
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}

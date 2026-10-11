@@ -6,8 +6,9 @@ import socket
 import stat
 import struct
 import tempfile
-import unittest
 from pathlib import Path
+
+import pytest
 
 from mlxctl.infrastructure.control_protocol import (
     MAX_FRAME_BYTES,
@@ -20,11 +21,14 @@ from mlxctl.infrastructure.control_protocol import (
 )
 
 
-class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
-    async def test_client_negotiates_and_receives_progress_then_result(self) -> None:
+@pytest.mark.asyncio(loop_scope="function")
+class TestControlProtocolV1:
+    async def test_client_negotiates_and_receives_progress_then_result(
+        self, async_cleanup
+    ) -> None:
         async def handle(request, emit_progress):
-            self.assertEqual(request.operation, "service.start")
-            self.assertEqual(request.parameters, {"service": "coding"})
+            assert request.operation == "service.start"
+            assert request.parameters == {"service": "coding"}
             await emit_progress({"phase": "starting", "completed": 1, "total": 2})
             return {"state": "ready"}
 
@@ -32,10 +36,10 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
             socket_path = Path(directory) / "mlxd.sock"
             server = UnixControlServer(socket_path, handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
 
             reader, writer = await asyncio.open_unix_connection(socket_path)
-            self.addAsyncCleanup(self._close_writer, writer)
+            async_cleanup.push_async_callback(self._close_writer, writer)
 
             await write_message(
                 writer,
@@ -46,15 +50,12 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
                     "request_id": "req-negotiate",
                 },
             )
-            self.assertEqual(
-                await read_message(reader),
-                {
-                    "type": "negotiated",
-                    "protocol": PROTOCOL_NAME,
-                    "version": PROTOCOL_VERSION,
-                    "request_id": "req-negotiate",
-                },
-            )
+            assert await read_message(reader) == {
+                "type": "negotiated",
+                "protocol": PROTOCOL_NAME,
+                "version": PROTOCOL_VERSION,
+                "request_id": "req-negotiate",
+            }
 
             await write_message(
                 writer,
@@ -71,34 +72,28 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
 
             progress = await read_message(reader)
             result = await read_message(reader)
-            self.assertEqual(
-                progress,
-                {
-                    "type": "progress",
-                    "protocol": PROTOCOL_NAME,
-                    "version": PROTOCOL_VERSION,
-                    "request_id": "req-start",
-                    "operation_id": "op-start",
-                    "sequence": 1,
-                    "progress": {"phase": "starting", "completed": 1, "total": 2},
-                },
-            )
-            self.assertEqual(
-                result,
-                {
-                    "type": "result",
-                    "protocol": PROTOCOL_NAME,
-                    "version": PROTOCOL_VERSION,
-                    "request_id": "req-start",
-                    "operation_id": "op-start",
-                    "result": {"state": "ready"},
-                },
-            )
-            self.assertEqual(socket_path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(socket_path.stat().st_uid, os.getuid())
+            assert progress == {
+                "type": "progress",
+                "protocol": PROTOCOL_NAME,
+                "version": PROTOCOL_VERSION,
+                "request_id": "req-start",
+                "operation_id": "op-start",
+                "sequence": 1,
+                "progress": {"phase": "starting", "completed": 1, "total": 2},
+            }
+            assert result == {
+                "type": "result",
+                "protocol": PROTOCOL_NAME,
+                "version": PROTOCOL_VERSION,
+                "request_id": "req-start",
+                "operation_id": "op-start",
+                "result": {"state": "ready"},
+            }
+            assert socket_path.stat().st_mode & 0o777 == 0o600
+            assert socket_path.stat().st_uid == os.getuid()
 
     async def test_incompatible_version_returns_stable_error_before_dispatch(
-        self,
+        self, async_cleanup
     ) -> None:
         handled = False
 
@@ -110,9 +105,9 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
             reader, writer = await asyncio.open_unix_connection(server.socket_path)
-            self.addAsyncCleanup(self._close_writer, writer)
+            async_cleanup.push_async_callback(self._close_writer, writer)
             await write_message(
                 writer,
                 {
@@ -124,12 +119,14 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
             )
             response = await read_message(reader)
 
-            self.assertEqual(response["type"], "error")
-            self.assertEqual(response["request_id"], "req-version")
-            self.assertEqual(response["error"]["code"], "unsupported_version")
-            self.assertFalse(handled)
+            assert response["type"] == "error"
+            assert response["request_id"] == "req-version"
+            assert response["error"]["code"] == "unsupported_version"
+            assert not handled
 
-    async def test_oversize_frame_is_rejected_before_payload_is_read(self) -> None:
+    async def test_oversize_frame_is_rejected_before_payload_is_read(
+        self, async_cleanup
+    ) -> None:
         handled = False
 
         async def handle(request, emit_progress):
@@ -140,33 +137,35 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
             reader, writer = await asyncio.open_unix_connection(server.socket_path)
-            self.addAsyncCleanup(self._close_writer, writer)
+            async_cleanup.push_async_callback(self._close_writer, writer)
             writer.write(struct.pack("!I", MAX_FRAME_BYTES + 1))
             await writer.drain()
 
             response = await read_message(reader)
-            self.assertEqual(response["error"]["code"], "frame_too_large")
-            self.assertFalse(handled)
+            assert response["error"]["code"] == "frame_too_large"
+            assert not handled
 
-    async def test_malformed_json_returns_stable_error(self) -> None:
+    async def test_malformed_json_returns_stable_error(self, async_cleanup) -> None:
         async def handle(request, emit_progress):
             return {}
 
         with tempfile.TemporaryDirectory() as directory:
             server = UnixControlServer(Path(directory) / "mlxd.sock", handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
             reader, writer = await asyncio.open_unix_connection(server.socket_path)
-            self.addAsyncCleanup(self._close_writer, writer)
+            async_cleanup.push_async_callback(self._close_writer, writer)
             writer.write(struct.pack("!I", 1) + b"{")
             await writer.drain()
 
             response = await read_message(reader)
-            self.assertEqual(response["error"]["code"], "malformed_frame")
+            assert response["error"]["code"] == "malformed_frame"
 
-    async def test_cancel_is_dispatched_while_an_operation_is_running(self) -> None:
+    async def test_cancel_is_dispatched_while_an_operation_is_running(
+        self, async_cleanup
+    ) -> None:
         operation_started = asyncio.Event()
         release_operation = asyncio.Event()
         cancelled: list[str] = []
@@ -186,9 +185,9 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
                 Path(directory) / "mlxd.sock", handle, cancel_handler=cancel
             )
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
             reader, writer = await asyncio.open_unix_connection(server.socket_path)
-            self.addAsyncCleanup(self._close_writer, writer)
+            async_cleanup.push_async_callback(self._close_writer, writer)
             await self._negotiate(reader, writer)
             await write_message(
                 writer,
@@ -218,10 +217,10 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
             cancel_result = next(
                 item for item in responses if item["request_id"] == "req-cancel"
             )
-            self.assertEqual(cancelled, ["op-long"])
-            self.assertEqual(cancel_result["result"], {"cancel_requested": True})
+            assert cancelled == ["op-long"]
+            assert cancel_result["result"] == {"cancel_requested": True}
 
-    async def test_peer_with_different_uid_is_rejected(self) -> None:
+    async def test_peer_with_different_uid_is_rejected(self, async_cleanup) -> None:
         async def handle(request, emit_progress):
             return {}
 
@@ -232,14 +231,16 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
                 peer_uid_resolver=lambda peer: os.getuid() + 1,
             )
             await server.start()
-            self.addAsyncCleanup(server.close)
+            async_cleanup.push_async_callback(server.close)
             reader, writer = await asyncio.open_unix_connection(server.socket_path)
-            self.addAsyncCleanup(self._close_writer, writer)
+            async_cleanup.push_async_callback(self._close_writer, writer)
 
             response = await read_message(reader)
-            self.assertEqual(response["error"]["code"], "peer_not_authorized")
+            assert response["error"]["code"] == "peer_not_authorized"
 
-    async def test_start_replaces_only_a_stale_user_owned_socket(self) -> None:
+    async def test_start_replaces_only_a_stale_user_owned_socket(
+        self, async_cleanup
+    ) -> None:
         async def handle(request, emit_progress):
             return {}
 
@@ -251,8 +252,8 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
 
             server = UnixControlServer(socket_path, handle)
             await server.start()
-            self.addAsyncCleanup(server.close)
-            self.assertTrue(stat_is_socket(socket_path))
+            async_cleanup.push_async_callback(server.close)
+            assert stat_is_socket(socket_path)
 
     async def test_start_never_replaces_regular_file_or_symlink(self) -> None:
         async def handle(request, emit_progress):
@@ -261,19 +262,19 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             regular_path = Path(directory) / "regular"
             regular_path.write_text("keep me")
-            with self.assertRaises(ControlSocketError) as regular_error:
+            with pytest.raises(ControlSocketError) as regular_error:
                 await UnixControlServer(regular_path, handle).start()
-            self.assertEqual(regular_error.exception.code, "unsafe_socket_path")
-            self.assertEqual(regular_path.read_text(), "keep me")
+            assert regular_error.value.code == "unsafe_socket_path"
+            assert regular_path.read_text() == "keep me"
 
             target = Path(directory) / "target"
             target.write_text("keep me too")
             symlink_path = Path(directory) / "link"
             symlink_path.symlink_to(target)
-            with self.assertRaises(ControlSocketError) as symlink_error:
+            with pytest.raises(ControlSocketError) as symlink_error:
                 await UnixControlServer(symlink_path, handle).start()
-            self.assertEqual(symlink_error.exception.code, "unsafe_socket_path")
-            self.assertTrue(symlink_path.is_symlink())
+            assert symlink_error.value.code == "unsafe_socket_path"
+            assert symlink_path.is_symlink()
 
     async def test_close_does_not_unlink_a_replacement_socket(self) -> None:
         async def handle(request, emit_progress):
@@ -288,7 +289,7 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
             replacement.bind(str(socket_path))
             try:
                 await server.close()
-                self.assertTrue(stat_is_socket(socket_path))
+                assert stat_is_socket(socket_path)
             finally:
                 replacement.close()
                 socket_path.unlink(missing_ok=True)
@@ -324,11 +325,11 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
             await entered.wait()
             closing = asyncio.create_task(server.close())
             await asyncio.sleep(0)
-            self.assertFalse(closing.done())
+            assert not closing.done()
 
             release.set()
             result = await read_message(reader)
-            self.assertEqual(result["result"], {"state": "stopped"})
+            assert result["result"] == {"state": "stopped"}
             await self._close_writer(writer)
             await asyncio.wait_for(closing, timeout=1)
 
@@ -344,7 +345,7 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
                 "request_id": "req-negotiate",
             },
         )
-        self.assertEqual((await read_message(reader))["type"], "negotiated")
+        assert (await read_message(reader))["type"] == "negotiated"
 
     @staticmethod
     async def _close_writer(writer: asyncio.StreamWriter) -> None:
@@ -354,7 +355,3 @@ class ControlProtocolV1Tests(unittest.IsolatedAsyncioTestCase):
 
 def stat_is_socket(path: Path) -> bool:
     return stat.S_ISSOCK(path.lstat().st_mode)
-
-
-if __name__ == "__main__":
-    unittest.main()

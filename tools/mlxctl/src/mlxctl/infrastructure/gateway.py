@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import ipaddress
 import json
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -205,7 +205,7 @@ def create_gateway(
     )
 
     @asynccontextmanager
-    async def lifespan(app: Starlette) -> AsyncIterator[Mapping[str, Any]]:
+    async def lifespan(app: Starlette) -> AsyncGenerator[Mapping[str, Any], None]:
         async with make_client() as client:
             yield {"http_client": client}
 

@@ -1,24 +1,36 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import plistlib
 import socket
 import stat
 import tempfile
 import threading
 import time
-import unittest
+from collections.abc import Mapping
+from functools import partial
 from pathlib import Path
-from unittest.mock import patch
+from typing import cast
+
+import httpx
+import pytest
+from huggingface_hub import scan_cache_dir
 
 from mlxctl.application.config_schema import validate_config
 from mlxctl.application.dispatch import ApplicationError, OperationRequest
+from mlxctl.application.dispatch import Dispatcher as OperationDispatcher
 from mlxctl.application.setup import SetupPreflight
 from mlxctl.infrastructure.config_store import ConfigStore
+from mlxctl.infrastructure.control_protocol import UnixControlServer
 from mlxctl.infrastructure.daemon_service import DaemonOperationRouter, DaemonService
 from mlxctl.infrastructure.gateway_credential import GatewayCredential
-from mlxctl.infrastructure.model_supply import CachedRevision, CacheInventory
+from mlxctl.infrastructure.host_integration import LaunchdSupervisorActivator
+from mlxctl.infrastructure.launchd import LaunchdAdapter
+from mlxctl.infrastructure.model_supply import (
+    CachedRevision,
+    CacheInventory,
+    ModelSupply,
+)
 from mlxctl.infrastructure.paths_v1 import MlxctlPaths
 from mlxctl.infrastructure.production import (
     _ActivatingOperationOwner,
@@ -43,6 +55,7 @@ from mlxctl.infrastructure.production_host import (
     resolve_uv,
 )
 from mlxctl.infrastructure.state_store import OperationalStateStore
+from mlxctl.infrastructure.supply_ports import ExactRevisionModelSecurity
 
 
 class _Port:
@@ -85,7 +98,7 @@ class _Launchd:
         return self.status()
 
 
-class ProductionCompositionTests(unittest.TestCase):
+class TestProductionComposition:
     @staticmethod
     def _profile_binding_config(*, revision: str):
         return validate_config(
@@ -119,9 +132,9 @@ class ProductionCompositionTests(unittest.TestCase):
         )
 
     def test_client_context_defaults_to_and_enforces_service_cap(self) -> None:
-        self.assertEqual(coherent_client_context(131_072, None), 131_072)
-        self.assertEqual(coherent_client_context(131_072, 131_072), 131_072)
-        with self.assertRaisesRegex(ValueError, "must match"):
+        assert coherent_client_context(131_072, None) == 131_072
+        assert coherent_client_context(131_072, 131_072) == 131_072
+        with pytest.raises(ValueError, match="must match"):
             coherent_client_context(131_072, 196_608)
 
     def test_local_model_resolution_is_side_effect_free_and_stays_local(self) -> None:
@@ -130,16 +143,22 @@ class ProductionCompositionTests(unittest.TestCase):
                 return (repo_id, revision, offline)
 
         remote = _Port()
-        model = _LocalModelSupply(Supply(), remote, object())
-
-        self.assertEqual(
-            model.resolve("owner/model", "main", offline=True),
-            ("owner/model", "main", True),
+        model = _LocalModelSupply(
+            cast(ModelSupply, Supply()),
+            remote,
+            cast(ExactRevisionModelSecurity, object()),
         )
-        self.assertEqual(remote.calls, [])
+
+        assert model.resolve("owner/model", "main", offline=True) == (
+            "owner/model",
+            "main",
+            True,
+        )
+        assert remote.calls == []
 
     def test_local_composition_prepares_private_paths_before_store_construction(
         self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -147,25 +166,30 @@ class ProductionCompositionTests(unittest.TestCase):
                 root / "config", root / "state", root / "data", root / "logs"
             )
 
-            with patch.object(
-                paths.__class__, "prepare", wraps=paths.prepare
-            ) as prepare:
-                compose_local(
-                    paths=paths, home=root, executable=Path("/usr/bin/python3")
-                )
+            prepared = []
+            prepare = MlxctlPaths.prepare
 
-            self.assertGreaterEqual(prepare.call_count, 1)
+            def record_prepare(instance):
+                prepared.append(instance)
+                prepare(instance)
+
+            monkeypatch.setattr(MlxctlPaths, "prepare", record_prepare)
+            compose_local(paths=paths, home=root, executable=Path("/usr/bin/python3"))
+
+            assert len(prepared) >= 1
 
     def test_setup_remote_owner_activates_only_at_execution_boundary(self) -> None:
         activator = _Activator()
         remote = _Port({"state": "complete"})
-        owner = _ActivatingOperationOwner(activator, remote)
+        owner = _ActivatingOperationOwner(
+            cast(LaunchdSupervisorActivator, activator), remote
+        )
 
-        self.assertEqual(activator.calls, 0)
+        assert activator.calls == 0
         owner.execute("runtime.install", {"runtime": "optiq"})
 
-        self.assertEqual(activator.calls, 1)
-        self.assertEqual(remote.calls[0][0], "runtime.install")
+        assert activator.calls == 1
+        assert remote.calls[0][0] == "runtime.install"
 
     def test_setup_supervisor_activation_is_visible_and_idempotently_forwarded(
         self,
@@ -173,25 +197,33 @@ class ProductionCompositionTests(unittest.TestCase):
         activator = _Activator()
         remote = _Port({"state": "running"})
 
-        owner = _SetupSupervisorOwner(remote, _Launchd(running=False), activator)
+        owner = _SetupSupervisorOwner(
+            remote,
+            cast(LaunchdAdapter, _Launchd(running=False)),
+            cast(LaunchdSupervisorActivator, activator),
+        )
         result = owner.execute("supervisor.start", {})
 
-        self.assertEqual(activator.calls, 1)
-        self.assertEqual(remote.calls, [("supervisor.start", {})])
-        self.assertEqual(result["state"], "running")
+        assert activator.calls == 1
+        assert remote.calls == [("supervisor.start", {})]
+        assert result["state"] == "running"
 
     def test_setup_recycles_a_running_supervisor_before_loading_new_code(self) -> None:
         activator = _Activator()
         remote = _Port({"state": "running"})
         launchd = _Launchd(running=True)
 
-        owner = _SetupSupervisorOwner(remote, launchd, activator)
+        owner = _SetupSupervisorOwner(
+            remote,
+            cast(LaunchdAdapter, launchd),
+            cast(LaunchdSupervisorActivator, activator),
+        )
         result = owner.execute("supervisor.start", {})
 
-        self.assertEqual(launchd.bootout_calls, 1)
-        self.assertEqual(activator.calls, 1)
-        self.assertEqual(remote.calls, [("supervisor.start", {})])
-        self.assertEqual(result["state"], "running")
+        assert launchd.bootout_calls == 1
+        assert activator.calls == 1
+        assert remote.calls == [("supervisor.start", {})]
+        assert result["state"] == "running"
 
     def test_request_profile_is_bound_to_the_service_exact_model_revision(self) -> None:
         exact_revision = "70a3aa32c7feef511182bf16aa332f37e8d82014"
@@ -202,13 +234,13 @@ class ProductionCompositionTests(unittest.TestCase):
             "codex",
         )["coding"]
 
-        self.assertTrue(
-            _sampling_matches_service_model(config, config.services["coding"], sampling)
+        assert _sampling_matches_service_model(
+            config, config.services["coding"], sampling
         )
 
         other = self._profile_binding_config(revision="a" * 40)
-        self.assertFalse(
-            _sampling_matches_service_model(other, other.services["coding"], sampling)
+        assert not _sampling_matches_service_model(
+            other, other.services["coding"], sampling
         )
 
     def test_local_supervisor_stop_is_idempotent_without_remote_activation(
@@ -219,7 +251,7 @@ class ProductionCompositionTests(unittest.TestCase):
             remote = _Port({"state": "stopping"})
             owner = _LocalSupervisorOwner(
                 remote,
-                _Launchd(running=False),
+                cast(LaunchdAdapter, _Launchd(running=False)),
                 root / "mlxd.sock",
                 OperationalStateStore(root / "state.db"),
                 ConfigStore(root / "config.toml", validate_config),
@@ -227,8 +259,8 @@ class ProductionCompositionTests(unittest.TestCase):
 
             result = owner.execute("supervisor.stop", {})
 
-        self.assertEqual(result, {"state": "stopped", "already_stopped": True})
-        self.assertEqual(remote.calls, [])
+        assert result == {"state": "stopped", "already_stopped": True}
+        assert remote.calls == []
 
     def test_local_supervisor_stop_forwards_when_launchd_is_running(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -236,7 +268,7 @@ class ProductionCompositionTests(unittest.TestCase):
             remote = _Port({"state": "stopping"})
             owner = _LocalSupervisorOwner(
                 remote,
-                _Launchd(running=True),
+                cast(LaunchdAdapter, _Launchd(running=True)),
                 root / "mlxd.sock",
                 OperationalStateStore(root / "state.db"),
                 ConfigStore(root / "config.toml", validate_config),
@@ -244,21 +276,23 @@ class ProductionCompositionTests(unittest.TestCase):
 
             result = owner.execute("supervisor.stop", {})
 
-        self.assertEqual(result, {"state": "stopping"})
-        self.assertEqual(remote.calls, [("supervisor.stop", {})])
+        assert result == {"state": "stopping"}
+        assert remote.calls == [("supervisor.stop", {})]
 
-    def test_local_supervisor_stop_forwards_to_foreground_socket_owner(self) -> None:
+    def test_local_supervisor_stop_forwards_to_foreground_socket_owner(
+        self, cleanup
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "mlxd.sock"
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.addCleanup(listener.close)
+            cleanup.callback(listener.close)
             listener.bind(str(path))
             listener.listen(1)
             remote = _Port({"state": "stopping"})
             owner = _LocalSupervisorOwner(
                 remote,
-                _Launchd(running=False),
+                cast(LaunchdAdapter, _Launchd(running=False)),
                 path,
                 OperationalStateStore(root / "state.db"),
                 ConfigStore(root / "config.toml", validate_config),
@@ -266,8 +300,8 @@ class ProductionCompositionTests(unittest.TestCase):
 
             result = owner.execute("supervisor.stop", {})
 
-        self.assertEqual(result, {"state": "stopping"})
-        self.assertEqual(remote.calls, [("supervisor.stop", {})])
+        assert result == {"state": "stopping"}
+        assert remote.calls == [("supervisor.stop", {})]
 
     def test_local_supervisor_stop_reconciles_a_stale_socket(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -279,7 +313,7 @@ class ProductionCompositionTests(unittest.TestCase):
             remote = _Port({"state": "stopping"})
             owner = _LocalSupervisorOwner(
                 remote,
-                _Launchd(running=False),
+                cast(LaunchdAdapter, _Launchd(running=False)),
                 path,
                 OperationalStateStore(root / "state.db"),
                 ConfigStore(root / "config.toml", validate_config),
@@ -287,8 +321,8 @@ class ProductionCompositionTests(unittest.TestCase):
 
             result = owner.execute("supervisor.stop", {})
 
-        self.assertEqual(result, {"state": "stopped", "already_stopped": True})
-        self.assertEqual(remote.calls, [])
+        assert result == {"state": "stopped", "already_stopped": True}
+        assert remote.calls == []
 
     def test_inactive_supervisor_stop_reconciles_stale_running_snapshots(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -338,7 +372,7 @@ class ProductionCompositionTests(unittest.TestCase):
             versions = iter(range(10, 20))
             owner = _LocalSupervisorOwner(
                 _Port(),
-                _Launchd(running=False),
+                cast(LaunchdAdapter, _Launchd(running=False)),
                 root / "mlxd.sock",
                 state,
                 config,
@@ -347,52 +381,61 @@ class ProductionCompositionTests(unittest.TestCase):
 
             owner.execute("supervisor.stop", {})
 
-            self.assertEqual(
-                state.snapshot("supervisor", "supervisor")["state"], "stopped"
-            )
+            supervisor = state.snapshot("supervisor", "supervisor")
+            assert supervisor is not None
+            assert supervisor["state"] == "stopped"
             gateway = state.snapshot("gateway", "gateway")
-            self.assertEqual(gateway["state"], "stopped")
-            self.assertEqual(gateway["port"], 9876)
+            assert gateway is not None
+            assert gateway["state"] == "stopped"
+            assert gateway["port"] == 9876
             service = state.snapshot("service_run", "coding/run-1")
-            self.assertEqual(service["state"], "stopped")
-            self.assertNotIn("pid", service)
+            assert service is not None
+            assert service["state"] == "stopped"
+            assert isinstance(service, (list, tuple, Mapping, str))
+            assert "pid" not in service
             operation = state.operation("operation-1")
-            self.assertEqual(operation["status"], "failed")
-            self.assertEqual(operation["outcome"], "interrupted")
-            self.assertEqual(state.events("operation-1")[-1]["kind"], "interrupted")
-            self.assertFalse(
-                {
-                    item.get("status")
-                    for item in state.operations()
-                    if item.get("status") in {"queued", "running", "resuming"}
-                }
-            )
+            assert operation is not None
+            assert operation["status"] == "failed"
+            assert operation["outcome"] == "interrupted"
+            assert state.events("operation-1")[-1]["kind"] == "interrupted"
+            assert not {
+                item.get("status")
+                for item in state.operations()
+                if item.get("status") in {"queued", "running", "resuming"}
+            }
 
     def test_running_gateway_endpoint_edit_fails_before_preview_or_execution(
         self,
     ) -> None:
         dispatcher = _Port()
-        guard = _GatewayMutationGuard(dispatcher, _Launchd(running=True))
+        guard = _GatewayMutationGuard(
+            cast(OperationDispatcher, dispatcher),
+            cast(LaunchdAdapter, _Launchd(running=True)),
+        )
 
-        with self.assertRaisesRegex(ApplicationError, "Stop the Supervisor"):
+        with pytest.raises(ApplicationError, match="Stop the Supervisor"):
             guard.preview(OperationRequest("gateway.configure", {"port": 9000}))
 
-        self.assertEqual(dispatcher.calls, [])
+        assert dispatcher.calls == []
 
-    def test_live_control_socket_blocks_gateway_endpoint_edit(self) -> None:
+    def test_live_control_socket_blocks_gateway_endpoint_edit(self, cleanup) -> None:
         dispatcher = _Port()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "mlxd.sock"
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            self.addCleanup(listener.close)
+            cleanup.callback(listener.close)
             listener.bind(str(path))
             listener.listen(1)
-            guard = _GatewayMutationGuard(dispatcher, _Launchd(running=False), path)
+            guard = _GatewayMutationGuard(
+                cast(OperationDispatcher, dispatcher),
+                cast(LaunchdAdapter, _Launchd(running=False)),
+                path,
+            )
 
-            with self.assertRaisesRegex(ApplicationError, "Stop the Supervisor"):
+            with pytest.raises(ApplicationError, match="Stop the Supervisor"):
                 guard.execute(OperationRequest("gateway.configure", {"port": 9000}))
 
-        self.assertEqual(dispatcher.calls, [])
+        assert dispatcher.calls == []
 
     def test_running_supervisor_allows_reconcilable_service_edit(self) -> None:
         class Dispatcher:
@@ -404,29 +447,32 @@ class ProductionCompositionTests(unittest.TestCase):
                 return {"edited": True}
 
         dispatcher = Dispatcher()
-        guard = _GatewayMutationGuard(dispatcher, _Launchd(running=True))
+        guard = _GatewayMutationGuard(
+            cast(OperationDispatcher, dispatcher),
+            cast(LaunchdAdapter, _Launchd(running=True)),
+        )
         request = OperationRequest("service.edit", {"resource": "coding"})
 
-        self.assertEqual(guard.execute(request), {"edited": True})
-        self.assertEqual(dispatcher.calls, [request])
+        assert guard.execute(request) == {"edited": True}
+        assert dispatcher.calls == [request]
 
     def test_client_sampling_defaults_cover_coding_and_memory_operations(self) -> None:
         repository = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
         revision = "70a3aa32c7feef511182bf16aa332f37e8d82014"
         coding = default_sampling(repository, revision, "codex")["coding"]
-        self.assertEqual(coding.temperature, 0.6)
-        self.assertEqual(coding.top_p, 0.95)
-        self.assertEqual(coding.top_k, 20)
-        self.assertEqual(coding.presence_penalty, 0.0)
-        self.assertTrue(coding.enable_thinking)
+        assert coding.temperature == 0.6
+        assert coding.top_p == 0.95
+        assert coding.top_k == 20
+        assert coding.presence_penalty == 0.0
+        assert coding.enable_thinking
         hindsight = default_sampling(repository, revision, "hindsight")
-        self.assertEqual(hindsight["verification"].temperature, 0.7)
-        self.assertEqual(hindsight["retain"].temperature, 0.7)
-        self.assertFalse(hindsight["retain"].enable_thinking)
-        self.assertEqual(hindsight["reflect"].temperature, 1.0)
-        self.assertTrue(hindsight["reflect"].enable_thinking)
-        self.assertEqual(hindsight["consolidation"].temperature, 0.7)
-        self.assertEqual(default_sampling(repository, "0" * 40, "codex"), {})
+        assert hindsight["verification"].temperature == 0.7
+        assert hindsight["retain"].temperature == 0.7
+        assert not hindsight["retain"].enable_thinking
+        assert hindsight["reflect"].temperature == 1.0
+        assert hindsight["reflect"].enable_thinking
+        assert hindsight["consolidation"].temperature == 0.7
+        assert default_sampling(repository, "0" * 40, "codex") == {}
 
     def test_local_status_neither_inspects_nor_activates_launchd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -442,18 +488,18 @@ class ProductionCompositionTests(unittest.TestCase):
                 OperationRequest("status")
             )
 
-            self.assertEqual(result.value["state"], "stopped")
-            self.assertFalse(
-                (root / "Library/LaunchAgents/io.nisavid.mlxd.plist").exists()
-            )
+            assert result.value["state"] == "stopped"
+            assert not (root / "Library/LaunchAgents/io.nisavid.mlxd.plist").exists()
 
             inspected = production.application.dispatcher.execute(
                 OperationRequest("gateway.inspect")
             ).value
             credential = inspected["credential"]
-            self.assertEqual(credential["scheme"], "Bearer")
-            self.assertEqual(credential["path"], str(paths.gateway_credential))
-            self.assertEqual(set(credential), {"scheme", "path", "instructions"})
+            assert isinstance(credential, Mapping)
+            assert credential["scheme"] == "Bearer"
+            assert credential["path"] == str(paths.gateway_credential)
+            assert isinstance(credential, (list, tuple, Mapping, str))
+            assert set(credential) == {"scheme", "path", "instructions"}
 
     def test_daemon_graph_composes_without_binding_or_starting_services(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -464,16 +510,22 @@ class ProductionCompositionTests(unittest.TestCase):
 
             daemon = compose_daemon(paths=paths, home=root)
 
-            self.assertIsInstance(daemon, DaemonService)
-            self.assertFalse(paths.control_socket.exists())
-            self.assertTrue(paths.gateway_credential.exists())
-            self.assertEqual(
-                stat.S_IMODE(paths.gateway_credential.stat().st_mode), 0o600
-            )
+            assert isinstance(daemon, DaemonService)
+            assert not paths.control_socket.exists()
+            assert paths.gateway_credential.exists()
+            assert stat.S_IMODE(paths.gateway_credential.stat().st_mode) == 0o600
 
-    def test_production_graphs_reject_adoption_inside_owned_data(self) -> None:
+    def test_production_graphs_reject_adoption_inside_owned_data(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            cache = root / "hub-cache"
+            cache.mkdir()
+            monkeypatch.setattr(
+                "huggingface_hub.scan_cache_dir",
+                partial(scan_cache_dir, cache_dir=cache),
+            )
             paths = MlxctlPaths(
                 root / "config", root / "state", root / "data", root / "logs"
             )
@@ -489,14 +541,14 @@ class ProductionCompositionTests(unittest.TestCase):
                 "path": str(snapshot),
             }
 
-            with self.assertRaisesRegex(Exception, "mlxctl-owned"):
+            with pytest.raises(Exception, match="mlxctl-owned"):
                 local.application.dispatcher.preview(
                     OperationRequest("model.adopt", parameters)
                 )
 
             daemon = compose_daemon(paths=paths, home=root)
             router = daemon._router_factory(lambda: None)
-            with self.assertRaisesRegex(ApplicationError, "mlxctl-owned"):
+            with pytest.raises(ApplicationError, match="mlxctl-owned"):
                 router.execute("model.adopt", parameters)
 
     def test_launchd_definition_is_inactive_and_uses_private_module_target(
@@ -508,18 +560,20 @@ class ProductionCompositionTests(unittest.TestCase):
 
         payload = plistlib.loads(adapter.preview())
 
-        self.assertFalse(payload["KeepAlive"])
-        self.assertFalse(payload["RunAtLoad"])
-        self.assertEqual(
-            payload["ProgramArguments"],
-            ["/usr/bin/python3", "-m", "mlxctl.entrypoints", "daemon"],
+        assert not payload["KeepAlive"]
+        assert not payload["RunAtLoad"]
+        assert payload["ProgramArguments"] == [
+            "/usr/bin/python3",
+            "-m",
+            "mlxctl.entrypoints",
+            "daemon",
+        ]
+        assert (
+            payload["StandardOutPath"]
+            == "/Users/example/Library/Logs/mlxctl/supervisor.log"
         )
-        self.assertEqual(
-            payload["StandardOutPath"],
-            "/Users/example/Library/Logs/mlxctl/supervisor.log",
-        )
-        self.assertEqual(payload["StandardErrorPath"], payload["StandardOutPath"])
-        self.assertEqual(payload["Umask"], 0o077)
+        assert payload["StandardErrorPath"] == payload["StandardOutPath"]
+        assert payload["Umask"] == 0o077
 
     def test_local_composition_preserves_tool_environment_interpreter_symlink(
         self,
@@ -539,29 +593,29 @@ class ProductionCompositionTests(unittest.TestCase):
             )
             payload = plistlib.loads(production.launchd.preview())
 
-        self.assertEqual(
-            payload["ProgramArguments"][0], str(tool_interpreter.absolute())
-        )
-        self.assertNotEqual(payload["ProgramArguments"][0], str(base_interpreter))
+        assert payload["ProgramArguments"][0] == str(tool_interpreter.absolute())
+        assert payload["ProgramArguments"][0] != str(base_interpreter)
 
-    @patch("mlxctl.infrastructure.production_host.subprocess.run")
-    def test_runtime_installer_uses_configured_absolute_uv(self, run) -> None:
+    def test_runtime_installer_uses_configured_absolute_uv(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = []
+
+        def run(*args, **kwargs):
+            calls.append((args, kwargs))
+
+        monkeypatch.setattr("mlxctl.infrastructure.production_host.subprocess.run", run)
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "uv"
             executable.write_text("#!/bin/sh\n", encoding="utf-8")
             executable.chmod(0o700)
-            with patch.dict(
-                os.environ,
-                {"MLXCTL_UV_EXECUTABLE": str(executable)},
-                clear=False,
-            ):
+            with monkeypatch.context() as patch:
+                patch.setenv("MLXCTL_UV_EXECUTABLE", str(executable))
                 resolved = resolve_uv(Path(directory))
             AbsoluteUvRunner(resolved).run(("uv", "--version"))
 
-        self.assertEqual(
-            run.call_args.args[0], (str(executable.resolve()), "--version")
-        )
-        self.assertFalse(run.call_args.kwargs["shell"])
+        assert calls[-1][0][0] == (str(executable.resolve()), "--version")
+        assert not calls[-1][1]["shell"]
 
     def test_router_dispatches_all_physical_owner_families(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -583,22 +637,21 @@ class ProductionCompositionTests(unittest.TestCase):
             router.execute("service.drain", {"resource": "coding"})
             router.execute("supervisor.stop", {})
 
-            self.assertEqual(runtime.calls[0][0], "runtime.install")
-            self.assertEqual(model.calls[0][0], "model.install")
-            self.assertEqual(supervisor.calls[0][0], "service.drain")
-            self.assertTrue(stops)
-            self.assertEqual(
-                state.operations()[0]["status"],
-                "complete",
-            )
-            self.assertEqual(
-                state.snapshot("supervisor", "supervisor")["state"], "stopped"
-            )
-            self.assertEqual(state.snapshot("gateway", "gateway")["port"], 8766)
-            self.assertEqual(
-                {metric["scope"] for metric in state.metrics()},
-                {"gateway", "supervisor"},
-            )
+            assert runtime.calls[0][0] == "runtime.install"
+            assert model.calls[0][0] == "model.install"
+            assert supervisor.calls[0][0] == "service.drain"
+            assert stops
+            assert state.operations()[0]["status"] == "complete"
+            supervisor = state.snapshot("supervisor", "supervisor")
+            assert supervisor is not None
+            assert supervisor["state"] == "stopped"
+            gateway = state.snapshot("gateway", "gateway")
+            assert gateway is not None
+            assert gateway["port"] == 8766
+            assert {metric["scope"] for metric in state.metrics()} == {
+                "gateway",
+                "supervisor",
+            }
 
     def test_router_rejects_unowned_resume_instead_of_faking_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -609,7 +662,7 @@ class ProductionCompositionTests(unittest.TestCase):
                 state=OperationalStateStore(Path(directory) / "state.sqlite3"),
             )
 
-            with self.assertRaisesRegex(ApplicationError, "not owned"):
+            with pytest.raises(ApplicationError, match="not owned"):
                 router.execute("operation.resume", {"resource": "unknown"})
 
     def test_supervisor_stop_drains_physical_work_and_rejects_new_work(self) -> None:
@@ -638,7 +691,7 @@ class ProductionCompositionTests(unittest.TestCase):
                 target=lambda: router.execute("runtime.install", {"runtime": "optiq"})
             )
             physical.start()
-            self.assertTrue(runtime.entered.wait(1))
+            assert runtime.entered.wait(1)
             stopped = []
             stopping = threading.Thread(
                 target=lambda: stopped.append(router.execute("supervisor.stop", {}))
@@ -646,16 +699,16 @@ class ProductionCompositionTests(unittest.TestCase):
             stopping.start()
             time.sleep(0.02)
 
-            with self.assertRaises(ApplicationError) as raised:
+            with pytest.raises(ApplicationError) as raised:
                 router.execute("model.install", {"repository": "owner/model"})
-            self.assertEqual(raised.exception.code, "supervisor_stopping")
-            self.assertEqual(supervisor.calls, [])
+            assert raised.value.code == "supervisor_stopping"
+            assert supervisor.calls == []
 
             runtime.release.set()
             physical.join(1)
             stopping.join(1)
-            self.assertEqual(stopped[0]["state"], "stopped")
-            self.assertEqual(supervisor.calls, [("supervisor.stop", {})])
+            assert stopped[0]["state"] == "stopped"
+            assert supervisor.calls == [("supervisor.stop", {})]
 
     def test_state_removal_rejects_symlink_even_when_it_resolves_to_owned_path(
         self,
@@ -668,14 +721,14 @@ class ProductionCompositionTests(unittest.TestCase):
             link.symlink_to(owned, target_is_directory=True)
             remover = OwnedStateRemover((owned,))
 
-            with self.assertRaisesRegex(ApplicationError, "outside mlxctl ownership"):
+            with pytest.raises(ApplicationError, match="outside mlxctl ownership"):
                 remover.execute(
                     "state.remove", {"paths": [str(link)], "confirmed": True}
                 )
-            self.assertTrue(owned.exists())
+            assert owned.exists()
 
     def test_recommended_setup_blocks_undersized_mac(self) -> None:
-        with self.assertRaisesRegex(ValueError, "no recommended setup profile fits"):
+        with pytest.raises(ValueError, match="no recommended setup profile fits"):
             _setup_planner().plan(
                 SetupPreflight(
                     "darwin",
@@ -699,66 +752,74 @@ class ProductionCompositionTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(preview.capacity_profile, "balanced")
-        self.assertEqual(preview.context_window, 131_072)
-        self.assertEqual(preview.service_options["max_context"], 131_072)
-        self.assertEqual(preview.service_options["max_concurrent"], 6)
-        self.assertEqual(preview.service_options["prompt_cache_bytes"], 2 * 1024**3)
-        self.assertNotIn("temperature", preview.service_options)
-        self.assertEqual(preview.projected_kv_bytes, 5_737_807_872)
-        self.assertEqual(preview.clients, ("codex", "hindsight"))
-        self.assertEqual(
+        assert preview.capacity_profile == "balanced"
+        assert preview.context_window == 131_072
+        assert preview.service_options["max_context"] == 131_072
+        assert preview.service_options["max_concurrent"] == 6
+        assert preview.service_options["prompt_cache_bytes"] == 2 * 1024**3
+        assert "temperature" not in preview.service_options
+        assert preview.projected_kv_bytes == 5_737_807_872
+        assert preview.clients == ("codex", "hindsight")
+        assert isinstance(preview.client_options["codex"]["sampling_profiles"], Mapping)
+        assert (
             preview.client_options["codex"]["sampling_profiles"]["coding"][
                 "temperature"
-            ],
-            0.6,
-        )
-        self.assertEqual(
-            preview.client_options["codex"]["sampling_profiles"]["coding"]["top_k"],
-            20,
-        )
-        self.assertTrue(
-            preview.client_options["codex"]["sampling_profiles"]["coding"][
-                "enable_thinking"
             ]
+            == 0.6
         )
-        self.assertEqual(
+        assert (
+            preview.client_options["codex"]["sampling_profiles"]["coding"]["top_k"]
+            == 20
+        )
+        assert preview.client_options["codex"]["sampling_profiles"]["coding"][
+            "enable_thinking"
+        ]
+        assert (
             preview.client_options["codex"]["sampling_profiles"]["coding"][
                 "upstream_profile"
-            ],
-            "precise-coding-thinking",
+            ]
+            == "precise-coding-thinking"
         )
-        self.assertEqual(
+        assert (
             preview.client_options["codex"]["sampling_profiles"]["coding"][
                 "source_revision"
-            ],
-            "995ad96eacd98c81ed38be0c5b274b04031597b0",
+            ]
+            == "995ad96eacd98c81ed38be0c5b274b04031597b0"
         )
-        self.assertEqual(
+        assert isinstance(
+            preview.client_options["hindsight"]["sampling_profiles"], Mapping
+        )
+        assert (
             preview.client_options["hindsight"]["sampling_profiles"]["retain"][
                 "temperature"
-            ],
-            0.7,
-        )
-        self.assertFalse(
-            preview.client_options["hindsight"]["sampling_profiles"]["retain"][
-                "enable_thinking"
             ]
+            == 0.7
         )
-        self.assertEqual(
+        assert not preview.client_options["hindsight"]["sampling_profiles"]["retain"][
+            "enable_thinking"
+        ]
+        assert (
             preview.client_options["hindsight"]["sampling_profiles"]["reflect"][
                 "temperature"
-            ],
-            1.0,
+            ]
+            == 1.0
         )
-        self.assertEqual(preview.client_options["hindsight"]["max_concurrent"], 1)
+        assert preview.client_options["hindsight"]["max_concurrent"] == 1
 
-    @patch("mlxctl.infrastructure.production_host.httpx.post")
-    def test_gateway_requests_append_to_openai_v1_base_once(self, post) -> None:
-        post.return_value.is_success = True
-        post.return_value.json.return_value = {
-            "choices": [{"message": {"content": "mlxctl ready"}}]
-        }
+    def test_gateway_requests_append_to_openai_v1_base_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = []
+
+        def post(url, **kwargs):
+            calls.append((url, kwargs))
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={"choices": [{"message": {"content": "mlxctl ready"}}]},
+            )
+
+        monkeypatch.setattr("mlxctl.infrastructure.production_host.httpx.post", post)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -779,21 +840,16 @@ class ProductionCompositionTests(unittest.TestCase):
                 credential=credential,
             )
 
-        self.assertEqual(result["text"], "mlxctl ready")
-        self.assertEqual(
-            [call.args[0] for call in post.call_args_list],
-            [
-                "http://127.0.0.1:8766/v1/chat/completions",
-                "http://127.0.0.1:8766/v1/chat/completions",
-            ],
-        )
-        self.assertEqual(
-            [call.kwargs["headers"]["authorization"] for call in post.call_args_list],
-            [f"Bearer {token}", f"Bearer {token}"],
-        )
-        self.assertEqual(
-            post.call_args_list[1].kwargs["json"]["messages"][0]["role"], "user"
-        )
+        assert result["text"] == "mlxctl ready"
+        assert [url for url, _ in calls] == [
+            "http://127.0.0.1:8766/v1/chat/completions",
+            "http://127.0.0.1:8766/v1/chat/completions",
+        ]
+        assert [kwargs["headers"]["authorization"] for _, kwargs in calls] == [
+            f"Bearer {token}",
+            f"Bearer {token}",
+        ]
+        assert calls[1][1]["json"]["messages"][0]["role"] == "user"
 
     def test_launch_supply_keeps_config_key_but_uses_exact_revision_identity(
         self,
@@ -831,10 +887,10 @@ class ProductionCompositionTests(unittest.TestCase):
 
             installations = configured_model_installations(config, inventory)
 
-            self.assertEqual(set(installations), {"friendly-installation"})
-            self.assertEqual(
-                installations["friendly-installation"].installation_id,
-                f"owner/model@{revision}",
+            assert set(installations) == {"friendly-installation"}
+            assert (
+                installations["friendly-installation"].installation_id
+                == f"owner/model@{revision}"
             )
 
     def test_launch_supply_uses_adopted_external_snapshot_without_cache_entry(
@@ -861,14 +917,9 @@ class ProductionCompositionTests(unittest.TestCase):
 
             installations = configured_model_installations(config, inventory)
 
-            self.assertEqual(installations["adopted"].snapshot_path, snapshot)
-            self.assertEqual(
-                installations["adopted"].provenance.source, "external-adopted"
-            )
-            self.assertEqual(
-                installations["adopted"].installation_id,
-                f"owner/model@{revision}",
-            )
+            assert installations["adopted"].snapshot_path == snapshot
+            assert installations["adopted"].provenance.source == "external-adopted"
+            assert installations["adopted"].installation_id == f"owner/model@{revision}"
 
 
 class _FakeRouter(_Port):
@@ -929,7 +980,8 @@ class _FakeServer:
         self.closed = True
 
 
-class DaemonServiceTests(unittest.IsolatedAsyncioTestCase):
+@pytest.mark.asyncio(loop_scope="function")
+class TestDaemonService:
     async def test_explicit_supervisor_stop_closes_control_service(self) -> None:
         routers = []
         servers = []
@@ -937,12 +989,12 @@ class DaemonServiceTests(unittest.IsolatedAsyncioTestCase):
         def router_factory(request_stop):
             router = _FakeRouter(request_stop)
             routers.append(router)
-            return router
+            return cast(DaemonOperationRouter, router)
 
         def server_factory(*args, **kwargs):
             server = _FakeServer(*args, **kwargs)
             servers.append(server)
-            return server
+            return cast(UnixControlServer, server)
 
         service = DaemonService(
             Path("/tmp/mlxd-test.sock"),
@@ -952,12 +1004,13 @@ class DaemonServiceTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(service.serve(), timeout=1)
 
-        self.assertEqual(routers[0].start_calls, 1)
-        self.assertEqual(routers[0].stop_calls, 1)
-        self.assertEqual(
-            [item["phase"] for item in servers[0].progress], ["started", "complete"]
-        )
-        self.assertTrue(servers[0].closed)
+        assert routers[0].start_calls == 1
+        assert routers[0].stop_calls == 1
+        assert [item["phase"] for item in servers[0].progress] == [
+            "started",
+            "complete",
+        ]
+        assert servers[0].closed
 
     async def test_daemon_runs_periodic_maintenance_without_cli_requests(self) -> None:
         routers = []
@@ -972,12 +1025,14 @@ class DaemonServiceTests(unittest.IsolatedAsyncioTestCase):
         def router_factory(request_stop):
             router = _FakeRouter(request_stop)
             routers.append(router)
-            return router
+            return cast(DaemonOperationRouter, router)
 
         service = DaemonService(
             Path("/tmp/mlxd-maintenance-test.sock"),
             router_factory,
-            server_factory=lambda *args, **kwargs: IdleServer(),
+            server_factory=lambda *args, **kwargs: cast(
+                UnixControlServer, IdleServer()
+            ),
             maintenance_interval=0.01,
         )
         task = asyncio.create_task(service.serve())
@@ -985,10 +1040,4 @@ class DaemonServiceTests(unittest.IsolatedAsyncioTestCase):
         routers[0].request_stop()
         await asyncio.wait_for(task, timeout=1)
 
-        self.assertGreaterEqual(
-            sum(call[0] == "maintain" for call in routers[0].calls), 2
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert sum(call[0] == "maintain" for call in routers[0].calls) >= 2

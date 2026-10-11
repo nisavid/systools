@@ -8,7 +8,7 @@ import os
 import sqlite3
 import stat
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -163,7 +163,8 @@ class OperationalStateStore:
                 "INSERT INTO events(operation_id, kind, dto_json) VALUES (?, ?, ?)",
                 (operation_id, kind, _encode(dto)),
             )
-            sequence = int(cursor.lastrowid)
+            sequence = cursor.lastrowid
+            assert sequence is not None
         return _record({**dto, "sequence": sequence})
 
     def events(self, operation_id: str | None = None) -> tuple[dict[str, object], ...]:
@@ -263,7 +264,8 @@ class OperationalStateStore:
                 "INSERT INTO metrics(kind, dto_json) VALUES (?, ?)",
                 (kind, _encode(dto)),
             )
-            sequence = int(cursor.lastrowid)
+            sequence = cursor.lastrowid
+            assert sequence is not None
         return _record({**dto, "sequence": sequence})
 
     def metrics(self, kind: str | None = None) -> tuple[dict[str, object], ...]:
@@ -296,7 +298,7 @@ class OperationalStateStore:
             raise
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Generator[sqlite3.Connection, None, None]:
         connection = self._connect()
         try:
             with connection:

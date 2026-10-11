@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
-import unittest
+from collections.abc import Mapping
 from types import SimpleNamespace
+from typing import TypeAlias
+
+import pytest
 
 from mlxctl.infrastructure.model_intelligence import (
     CacheObservation,
@@ -20,6 +23,7 @@ from mlxctl.infrastructure.model_intelligence import (
 )
 
 GIB = 1024**3
+NestedInput: TypeAlias = "str | dict[str, NestedInput]"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
@@ -126,7 +130,7 @@ def _json_payload(path: str, value: object) -> MetadataPayload:
     )
 
 
-class ModelIntelligenceTests(unittest.TestCase):
+class TestModelIntelligence:
     def test_pinned_qwen_capacity_profiles_share_exact_kv_budget(self) -> None:
         config = {"head_dim": 256, "num_key_value_heads": 2}
         kv_config = [
@@ -143,16 +147,16 @@ class ModelIntelligenceTests(unittest.TestCase):
             for context, count in ((131_072, 6), (196_608, 4), (262_144, 3))
         }
 
-        self.assertEqual(projections, {5_737_807_872})
+        assert projections == {5_737_807_872}
 
     def test_machine_inventory_reports_unified_memory_capacity(self) -> None:
         inventory = PsutilMachineInventory(
             lambda: SimpleNamespace(total=64 * GIB, available=48 * GIB)
         ).inspect()
 
-        self.assertEqual(inventory.total_memory_bytes, 64 * GIB)
-        self.assertEqual(inventory.available_memory_bytes, 48 * GIB)
-        self.assertEqual(inventory.source, "psutil virtual_memory")
+        assert inventory.total_memory_bytes == 64 * GIB
+        assert inventory.available_memory_bytes == 48 * GIB
+        assert inventory.source == "psutil virtual_memory"
 
     def test_hugging_face_adapter_requests_exact_bounded_metadata(self) -> None:
         api = _HubApi()
@@ -169,26 +173,24 @@ class ModelIntelligenceTests(unittest.TestCase):
             max_bytes=2048,
         )
 
-        self.assertEqual(envelope.commit_sha, SHA)
-        self.assertTrue(envelope.scans_done)
-        self.assertEqual(envelope.files[0].size, 123)
-        self.assertEqual(
-            api.calls,
-            [
-                (
-                    "acme/Model",
-                    {
-                        "revision": "main",
-                        "files_metadata": True,
-                        "securityStatus": True,
-                        "timeout": 10.0,
-                    },
-                )
-            ],
-        )
-        self.assertEqual(fetcher.calls[0][1], SHA)
-        self.assertEqual(fetcher.calls[0][3], 2048)
-        self.assertEqual(payload.path, "config.json")
+        assert envelope.commit_sha == SHA
+        assert envelope.scans_done
+        assert envelope.files[0].size == 123
+        assert api.calls == [
+            (
+                "acme/Model",
+                {
+                    "revision": "main",
+                    "files_metadata": True,
+                    "securityStatus": True,
+                    "timeout": 10.0,
+                },
+            )
+        ]
+        assert fetcher.calls[0][1] == SHA
+        assert fetcher.calls[0][3] == 2048
+        assert payload is not None
+        assert payload.path == "config.json"
 
     def test_inspects_arbitrary_repository_at_an_exact_revision_before_install(
         self,
@@ -211,22 +213,23 @@ class ModelIntelligenceTests(unittest.TestCase):
             "acme/Useful-Model", "main"
         )
 
-        self.assertEqual(report.identity.repo_id, "acme/Useful-Model")
-        self.assertEqual(report.identity.requested_revision, "main")
-        self.assertEqual(report.identity.commit_sha, SHA)
-        self.assertEqual(report.attributes["architecture"].value, "qwen3")
-        self.assertEqual(
-            report.attributes["architecture"].state, EvidenceState.OBSERVED
-        )
-        self.assertEqual(report.attributes["architecture"].source, f"config.json@{SHA}")
-        self.assertEqual(report.attributes["task"].value, "text-generation")
-        self.assertEqual(report.attributes["task"].state, EvidenceState.DECLARED)
-        self.assertEqual(report.attributes["publisher"].value, "acme")
-        self.assertEqual(report.attributes["parameters"].value["total"], 30)
-        self.assertEqual(report.attributes["parameters"].state, EvidenceState.OBSERVED)
-        self.assertEqual(report.cache.state, "absent")
-        self.assertEqual(report.repository_files, repository.envelope.files)
-        self.assertEqual(repository.fetches[0][1], SHA)
+        assert report.identity.repo_id == "acme/Useful-Model"
+        assert report.identity.requested_revision == "main"
+        assert report.identity.commit_sha == SHA
+        assert report.attributes["architecture"].value == "qwen3"
+        assert report.attributes["architecture"].state == EvidenceState.OBSERVED
+        assert report.attributes["architecture"].source == f"config.json@{SHA}"
+        assert report.attributes["task"].value == "text-generation"
+        assert report.attributes["task"].state == EvidenceState.DECLARED
+        assert report.attributes["publisher"].value == "acme"
+        assert isinstance(report.attributes["parameters"].value, Mapping)
+        parameters = report.attributes["parameters"].value
+        assert isinstance(parameters, Mapping)
+        assert parameters["total"] == 30
+        assert report.attributes["parameters"].state == EvidenceState.OBSERVED
+        assert report.cache.state == "absent"
+        assert report.repository_files == repository.envelope.files
+        assert repository.fetches[0][1] == SHA
 
     def test_reports_optiq_kv_and_mtp_as_structural_evidence(self) -> None:
         repository = _Repository(
@@ -260,14 +263,14 @@ class ModelIntelligenceTests(unittest.TestCase):
         )
 
         artifacts = {item.role: item for item in report.artifacts}
-        self.assertTrue(artifacts["optiq_kv_config"].present)
-        self.assertEqual(artifacts["optiq_kv_config"].path, "kv_config.json")
-        self.assertTrue(artifacts["mtp_weights"].present)
-        self.assertEqual(artifacts["mtp_weights"].required_by, "config.json")
-        self.assertEqual(report.capabilities["mtp"].value, True)
-        self.assertEqual(report.capabilities["mtp"].state, EvidenceState.DERIVED)
-        self.assertEqual(report.capabilities["optiq"].value, True)
-        self.assertEqual(report.capabilities["optiq"].source, f"kv_config.json@{SHA}")
+        assert artifacts["optiq_kv_config"].present
+        assert artifacts["optiq_kv_config"].path == "kv_config.json"
+        assert artifacts["mtp_weights"].present
+        assert artifacts["mtp_weights"].required_by == "config.json"
+        assert report.capabilities["mtp"].value == True
+        assert report.capabilities["mtp"].state == EvidenceState.DERIVED
+        assert report.capabilities["optiq"].value == True
+        assert report.capabilities["optiq"].source == f"kv_config.json@{SHA}"
 
     def test_qualifies_compatibility_for_each_exact_runtime_installation(self) -> None:
         repository = _Repository(
@@ -324,18 +327,17 @@ class ModelIntelligenceTests(unittest.TestCase):
         )
 
         compatibility = {item.installation_id: item for item in report.compatibility}
-        self.assertEqual(compatibility["mlx-lm@0.31.3"].status, "candidate")
-        self.assertEqual(compatibility["optiq@0.3.3"].status, "candidate")
-        self.assertEqual(compatibility["mlx-vlm@0.6.4"].status, "unsupported")
+        assert compatibility["mlx-lm@0.31.3"].status == "candidate"
+        assert compatibility["optiq@0.3.3"].status == "candidate"
+        assert compatibility["mlx-vlm@0.6.4"].status == "unsupported"
         unclassified = compatibility["optiq@0.3.4-unclassified"]
-        self.assertEqual(unclassified.status, "unknown")
-        self.assertIn("recognition evidence is unavailable", unclassified.detail)
-        self.assertEqual(
-            compatibility["optiq@0.3.3"].capabilities,
-            frozenset({"kv_config", "mtp"}),
+        assert unclassified.status == "unknown"
+        assert "recognition evidence is unavailable" in unclassified.detail
+        assert compatibility["optiq@0.3.3"].capabilities == frozenset(
+            {"kv_config", "mtp"}
         )
-        self.assertIn("optiq@0.3.3", compatibility["optiq@0.3.3"].source)
-        self.assertIn(SHA, compatibility["optiq@0.3.3"].source)
+        assert "optiq@0.3.3" in compatibility["optiq@0.3.3"].source
+        assert SHA in compatibility["optiq@0.3.3"].source
 
     def test_estimates_machine_fit_from_selected_weights_and_named_assumptions(
         self,
@@ -379,18 +381,19 @@ class ModelIntelligenceTests(unittest.TestCase):
             "acme/Standard-20B", SHA, context_tokens=32_768, concurrency=1
         )
 
+        assert report.fit is not None
         terms = {item.name: item for item in report.fit.terms}
-        self.assertEqual(terms["selected tensor files"].low_bytes, 20 * GIB)
-        self.assertEqual(terms["selected tensor files"].state, EvidenceState.OBSERVED)
-        self.assertEqual(terms["KV cache"].low_bytes, 5 * GIB)
-        self.assertEqual(terms["KV cache"].state, EvidenceState.DERIVED)
-        self.assertIn("config.json", terms["KV cache"].source)
-        self.assertEqual(report.fit.classification, "likely_fits")
-        self.assertEqual(report.fit.context_tokens, 32_768)
-        self.assertEqual(report.fit.concurrency, 1)
-        self.assertGreater(report.fit.high_bytes, report.fit.low_bytes)
-        self.assertEqual(report.fit.machine_memory_bytes, 64 * GIB)
-        self.assertGreaterEqual(report.fit.reserved_headroom_bytes, 8 * GIB)
+        assert terms["selected tensor files"].low_bytes == 20 * GIB
+        assert terms["selected tensor files"].state == EvidenceState.OBSERVED
+        assert terms["KV cache"].low_bytes == 5 * GIB
+        assert terms["KV cache"].state == EvidenceState.DERIVED
+        assert "config.json" in terms["KV cache"].source
+        assert report.fit.classification == "likely_fits"
+        assert report.fit.context_tokens == 32_768
+        assert report.fit.concurrency == 1
+        assert report.fit.high_bytes > report.fit.low_bytes
+        assert report.fit.machine_memory_bytes == 64 * GIB
+        assert report.fit.reserved_headroom_bytes >= 8 * GIB
 
     def test_uses_per_layer_optiq_kv_metadata_for_hybrid_attention_fit(self) -> None:
         kv_layers = [
@@ -439,14 +442,13 @@ class ModelIntelligenceTests(unittest.TestCase):
             "mlx-community/Qwen-OptiQ", SHA, context_tokens=32_768
         )
 
+        assert report.fit is not None
         terms = {item.name: item for item in report.fit.terms}
-        self.assertEqual(terms["KV cache"].low_bytes, 239_075_328)
-        self.assertIn("kv_config.json", terms["KV cache"].source)
+        assert terms["KV cache"].low_bytes == 239_075_328
+        assert "kv_config.json" in terms["KV cache"].source
         artifacts = {item.role: item.path for item in report.artifacts}
-        self.assertEqual(artifacts["mtp_weights"], "optiq/mtp.safetensors")
-        self.assertEqual(
-            artifacts["optiq_vision_weights"], "optiq/optiq_vision.safetensors"
-        )
+        assert artifacts["mtp_weights"] == "optiq/mtp.safetensors"
+        assert artifacts["optiq_vision_weights"] == "optiq/optiq_vision.safetensors"
 
     def test_preserves_attribute_provenance_conflicts_and_unknown_capabilities(
         self,
@@ -487,76 +489,77 @@ class ModelIntelligenceTests(unittest.TestCase):
             "acme/Coder-Agent-Vision", SHA
         )
 
-        self.assertEqual(report.attributes["license"].value, "apache-2.0")
-        self.assertEqual(report.attributes["license"].state, EvidenceState.DECLARED)
-        self.assertEqual(report.attributes["quantization"].value["bits"], 4)
-        self.assertEqual(
-            report.attributes["context_length"].state, EvidenceState.CONFLICTING
-        )
-        self.assertEqual(
-            report.attributes["context_length"].value,
-            {"config.json": 131_072, "tokenizer_config.json": 32_768},
-        )
-        self.assertEqual(report.capabilities["vision"].value, True)
-        self.assertIsNone(report.capabilities["coding"].value)
-        self.assertIsNone(report.capabilities["tool_use"].value)
+        assert report.attributes["license"].value == "apache-2.0"
+        assert report.attributes["license"].state == EvidenceState.DECLARED
+        assert isinstance(report.attributes["quantization"].value, Mapping)
+        assert report.attributes["quantization"].value["bits"] == 4
+        assert report.attributes["context_length"].state == EvidenceState.CONFLICTING
+        assert report.attributes["context_length"].value == {
+            "config.json": 131_072,
+            "tokenizer_config.json": 32_768,
+        }
+        assert report.capabilities["vision"].value == True
+        assert report.capabilities["coding"].value is None
+        assert report.capabilities["tool_use"].value is None
         trust = {item.name: item for item in report.trust_signals}
-        self.assertEqual(trust["hub_security_scan"].severity, "info")
-        self.assertEqual(trust["repository_code"].severity, "warning")
-        self.assertEqual(trust["unsafe_serialization"].severity, "warning")
-        self.assertEqual(trust["remote_code_mapping"].severity, "warning")
+        assert trust["hub_security_scan"].severity == "info"
+        assert trust["repository_code"].severity == "warning"
+        assert trust["unsafe_serialization"].severity == "warning"
+        assert trust["remote_code_mapping"].severity == "warning"
 
-    def test_rejects_unsafe_references_paths_and_unbounded_metadata(self) -> None:
+    def test_rejects_unsafe_references_paths_and_unbounded_metadata(
+        self, subtests: pytest.Subtests
+    ) -> None:
         envelope = RepositoryEnvelope(
             repo_id="acme/Model",
             commit_sha=SHA,
             files=(RepositoryFile("config.json", 1),),
         )
         with (
-            self.subTest("URL reference"),
-            self.assertRaisesRegex(ModelIntelligenceError, "not a path or URL"),
+            subtests.test("URL reference"),
+            pytest.raises(ModelIntelligenceError, match="not a path or URL"),
         ):
             ModelIntelligence(_Repository(envelope, {}), _Machine()).inspect(
                 "https://huggingface.co/acme/Model", "main"
             )
-        with self.subTest("traversal inventory"):
+        with subtests.test("traversal inventory"):
             unsafe = RepositoryEnvelope(
                 repo_id="acme/Model",
                 commit_sha=SHA,
                 files=(RepositoryFile("../config.json", 1),),
             )
-            with self.assertRaisesRegex(ModelIntelligenceError, "unsafe path"):
+            with pytest.raises(ModelIntelligenceError, match="unsafe path"):
                 ModelIntelligence(_Repository(unsafe, {}), _Machine()).inspect(
                     "acme/Model", "main"
                 )
-        with self.subTest("oversized payload"):
+        with subtests.test("oversized payload"):
             payload = MetadataPayload(
                 path="config.json",
                 content_type="application/json",
                 body=b" " * (2 * 1024 * 1024 + 1),
             )
-            with self.assertRaisesRegex(ModelIntelligenceError, "byte limit"):
+            with pytest.raises(ModelIntelligenceError, match="byte limit"):
                 ModelIntelligence(
                     _Repository(envelope, {"config.json": payload}), _Machine()
                 ).inspect("acme/Model", "main")
-        with self.subTest("artifact URL"):
+        with subtests.test("artifact URL"):
             url_payload = _json_payload(
                 "config.json", {"mtp_file": "https://example.invalid/mtp.safetensors"}
             )
-            with self.assertRaisesRegex(ModelIntelligenceError, "must not be a URL"):
+            with pytest.raises(ModelIntelligenceError, match="must not be a URL"):
                 ModelIntelligence(
                     _Repository(envelope, {"config.json": url_payload}), _Machine()
                 ).inspect("acme/Model", "main")
-        with self.subTest("deep JSON"):
-            deep: object = "leaf"
+        with subtests.test("deep JSON"):
+            deep: NestedInput = "leaf"
             for _ in range(30):
                 deep = {"next": deep}
             deep_payload = _json_payload("config.json", deep)
-            with self.assertRaisesRegex(ModelIntelligenceError, "nesting limit"):
+            with pytest.raises(ModelIntelligenceError, match="nesting limit"):
                 ModelIntelligence(
                     _Repository(envelope, {"config.json": deep_payload}), _Machine()
                 ).inspect("acme/Model", "main")
-        with self.subTest("unbounded inventory"):
+        with subtests.test("unbounded inventory"):
             huge_envelope = RepositoryEnvelope(
                 repo_id="acme/Model",
                 commit_sha=SHA,
@@ -564,11 +567,7 @@ class ModelIntelligenceTests(unittest.TestCase):
                     RepositoryFile(f"files/{index}.json", 1) for index in range(20_001)
                 ),
             )
-            with self.assertRaisesRegex(ModelIntelligenceError, "file-count limit"):
+            with pytest.raises(ModelIntelligenceError, match="file-count limit"):
                 ModelIntelligence(_Repository(huge_envelope, {}), _Machine()).inspect(
                     "acme/Model", "main"
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

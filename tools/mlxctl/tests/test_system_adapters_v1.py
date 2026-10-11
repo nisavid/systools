@@ -3,11 +3,14 @@ from __future__ import annotations
 import socket
 import stat
 import tempfile
-import unittest
 from pathlib import Path
+from subprocess import Popen
 from types import SimpleNamespace
+from typing import cast
 
 import httpx
+import psutil
+import pytest
 import tomlkit
 
 from mlxctl.application.config_schema import validate_config
@@ -160,7 +163,7 @@ def _verified_model(_model):
     return VerificationResult("complete", "cache-integrity", ())
 
 
-class ProcessLauncherTests(unittest.TestCase):
+class TestProcessLauncher:
     def test_launch_uses_exact_argv_allowlisted_environment_and_private_service_log(
         self,
     ) -> None:
@@ -169,7 +172,7 @@ class ProcessLauncherTests(unittest.TestCase):
 
             def popen(argv, **kwargs):
                 calls.append((tuple(argv), dict(kwargs)))
-                return _FakePopen()
+                return cast(Popen[bytes], _FakePopen())
 
             log_dir = Path(directory) / "logs"
             launcher = MacOSProcessLauncher(
@@ -187,25 +190,22 @@ class ProcessLauncherTests(unittest.TestCase):
                 {"MLXCTL_SERVICE_NAME": "coding", "HF_HUB_OFFLINE": "1"},
             )
 
-            self.assertEqual(process.pid, 4123)
+            assert process.pid == 4123
             argv, options = calls[0]
-            self.assertEqual(argv, ("/runtime/bin/optiq", "serve", "--port", "49152"))
-            self.assertIs(options["shell"], False)
-            self.assertEqual(
-                options["env"],
-                {
-                    "PATH": "/usr/bin",
-                    "HOME": "/Users/example",
-                    "MLXCTL_SERVICE_NAME": "coding",
-                    "HF_HUB_OFFLINE": "1",
-                },
-            )
+            assert argv == ("/runtime/bin/optiq", "serve", "--port", "49152")
+            assert options["shell"] is False
+            assert options["env"] == {
+                "PATH": "/usr/bin",
+                "HOME": "/Users/example",
+                "MLXCTL_SERVICE_NAME": "coding",
+                "HF_HUB_OFFLINE": "1",
+            }
             log = log_dir / "coding.log"
-            self.assertTrue(log.is_file())
-            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(log_dir.stat().st_mode), 0o700)
+            assert log.is_file()
+            assert stat.S_IMODE(log.stat().st_mode) == 0o600
+            assert stat.S_IMODE(log_dir.stat().st_mode) == 0o700
 
-            with self.assertRaisesRegex(ValueError, "environment variable"):
+            with pytest.raises(ValueError, match="environment variable"):
                 launcher.launch(("/runtime/bin/optiq",), {"API_TOKEN": "secret"})
 
     def test_service_logs_rotate_with_bounded_size_and_retention(self) -> None:
@@ -215,7 +215,7 @@ class ProcessLauncherTests(unittest.TestCase):
                 import os
 
                 os.write(kwargs["stdout"], b"0123456789abcdef")
-                return _FakePopen()
+                return cast(Popen[bytes], _FakePopen())
 
             log_dir = Path(directory) / "logs"
             launcher = MacOSProcessLauncher(
@@ -233,9 +233,9 @@ class ProcessLauncherTests(unittest.TestCase):
                 process.wait(1)
 
             files = tuple(sorted(log_dir.glob("coding.log*")))
-            self.assertLessEqual(len(files), 3)
-            self.assertTrue(files)
-            self.assertTrue(all(path.stat().st_size <= 8 for path in files))
+            assert len(files) <= 3
+            assert files
+            assert all(path.stat().st_size <= 8 for path in files)
 
     def test_launch_refuses_a_symlink_at_the_private_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -247,15 +247,15 @@ class ProcessLauncherTests(unittest.TestCase):
             (log_dir / "coding.log").symlink_to(target)
             launcher = MacOSProcessLauncher(
                 log_dir=log_dir,
-                popen=lambda *args, **kwargs: _FakePopen(),
+                popen=lambda *args, **kwargs: cast(Popen[bytes], _FakePopen()),
             )
 
-            with self.assertRaises(OSError):
+            with pytest.raises(OSError):
                 launcher.launch(
                     ("/runtime/bin/optiq",), {"MLXCTL_SERVICE_NAME": "coding"}
                 )
 
-            self.assertEqual(target.read_text(), "preserve")
+            assert target.read_text() == "preserve"
 
     def test_port_allocation_is_literal_loopback_only_and_attach_is_bounded(
         self,
@@ -263,40 +263,42 @@ class ProcessLauncherTests(unittest.TestCase):
         attached = _FakePsutilProcess(8123)
         launcher = MacOSProcessLauncher(
             log_dir=Path("/unused"),
-            process_factory=lambda pid: attached,
+            process_factory=lambda pid: cast(psutil.Process, attached),
         )
 
         port = launcher.allocate_loopback_port("127.0.0.1")
 
-        self.assertGreater(port, 0)
+        assert port > 0
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
             listener.bind(("127.0.0.1", port))
-        with self.assertRaisesRegex(ValueError, "literal loopback"):
+        with pytest.raises(ValueError, match="literal loopback"):
             launcher.allocate_loopback_port("localhost")
-        with self.assertRaisesRegex(ValueError, "literal loopback"):
+        with pytest.raises(ValueError, match="literal loopback"):
             launcher.allocate_loopback_port("0.0.0.0")
 
         process = launcher.attach(8123)
-        self.assertIsNotNone(process)
-        self.assertEqual(process.pid, 8123)
-        self.assertIsNone(process.poll())
+        assert process is not None
+        assert process.pid == 8123
+        assert process.poll() is None
         process.terminate()
-        self.assertEqual(process.poll(), 0)
+        assert process.poll() == 0
 
 
-class ProcessProbeTests(unittest.TestCase):
+class TestProcessProbe:
     def test_pid_identity_includes_birth_time_and_detects_reuse(self) -> None:
         observed = _FakePsutilProcess(8123)
-        probe = MacOSProcessProbe(process_factory=lambda pid: observed)
+        probe = MacOSProcessProbe(
+            process_factory=lambda pid: cast(psutil.Process, observed)
+        )
         process = type("Managed", (), {"pid": 8123})()
 
         identity = probe.identity(process)
 
-        self.assertEqual(identity.pid, 8123)
-        self.assertTrue(identity.birth_token.startswith("psutil-create-time:"))
-        self.assertTrue(probe.identity_matches(identity))
+        assert identity.pid == 8123
+        assert identity.birth_token.startswith("psutil-create-time:")
+        assert probe.identity_matches(identity)
         observed.created_at += 1
-        self.assertFalse(probe.identity_matches(identity))
+        assert not probe.identity_matches(identity)
 
     def test_readiness_is_bounded_to_openai_models_on_literal_loopback(self) -> None:
         requests: list[httpx.Request] = []
@@ -307,13 +309,13 @@ class ProcessProbeTests(unittest.TestCase):
 
         probe = MacOSProcessProbe(transport=httpx.MockTransport(respond))
 
-        self.assertTrue(probe.is_ready("http://127.0.0.1:8766", timeout=0.25))
-        self.assertEqual(str(requests[0].url), "http://127.0.0.1:8766/v1/models")
-        with self.assertRaisesRegex(ValueError, "literal loopback"):
+        assert probe.is_ready("http://127.0.0.1:8766", timeout=0.25)
+        assert str(requests[0].url) == "http://127.0.0.1:8766/v1/models"
+        with pytest.raises(ValueError, match="literal loopback"):
             probe.is_ready("http://localhost:8766", timeout=0.25)
-        with self.assertRaisesRegex(ValueError, "literal loopback"):
+        with pytest.raises(ValueError, match="literal loopback"):
             probe.is_ready("http://10.0.0.2:8766", timeout=0.25)
-        with self.assertRaisesRegex(ValueError, "positive"):
+        with pytest.raises(ValueError, match="positive"):
             probe.is_ready("http://127.0.0.1:8766", timeout=0)
 
     def test_readiness_treats_transport_errors_and_non_success_as_not_ready(self):
@@ -328,22 +330,22 @@ class ProcessProbeTests(unittest.TestCase):
             )
         )
 
-        self.assertFalse(unavailable.is_ready("http://127.0.0.1:8766", timeout=0.1))
-        self.assertFalse(disconnected.is_ready("http://127.0.0.1:8766", timeout=0.1))
+        assert not unavailable.is_ready("http://127.0.0.1:8766", timeout=0.1)
+        assert not disconnected.is_ready("http://127.0.0.1:8766", timeout=0.1)
 
 
-class HostPolicyAdapterTests(unittest.TestCase):
+class TestHostPolicyAdapter:
     def test_memory_pressure_uses_conservative_available_memory_thresholds(self):
         sample = SimpleNamespace(total=100, available=26)
         pressure = MacOSMemoryPressure(sample=lambda: sample)
 
-        self.assertEqual(pressure.current(), PressureLevel.NORMAL)
+        assert pressure.current() == PressureLevel.NORMAL
         sample.available = 25
-        self.assertEqual(pressure.current(), PressureLevel.WARNING)
+        assert pressure.current() == PressureLevel.WARNING
         sample.available = 15
-        self.assertEqual(pressure.current(), PressureLevel.CRITICAL)
+        assert pressure.current() == PressureLevel.CRITICAL
 
-        with self.assertRaisesRegex(ValueError, "thresholds"):
+        with pytest.raises(ValueError, match="thresholds"):
             MacOSMemoryPressure(
                 warning_available_ratio=0.1, critical_available_ratio=0.2
             )
@@ -356,26 +358,26 @@ class HostPolicyAdapterTests(unittest.TestCase):
             sleep=sleeps.append,
         )
 
-        self.assertEqual(clock.monotonic(), 12.5)
-        self.assertEqual(clock.time_ns(), 99)
+        assert clock.monotonic() == 12.5
+        assert clock.time_ns() == 99
         clock.sleep(0.2)
-        self.assertEqual(sleeps, [0.2])
+        assert sleeps == [0.2]
 
     def test_desired_state_view_reloads_config_without_starting_services(self) -> None:
         configs = [_config()]
         desired = ConfigDesiredState(lambda: configs[-1])
 
-        self.assertEqual(str(desired.service("coding").name), "coding")
-        self.assertIsNone(desired.service("memory"))
+        service = desired.service("coding")
+        assert service is not None
+        assert str(service.name) == "coding"
+        assert desired.service("memory") is None
 
         configs.append(_config(service_name="memory"))
-        self.assertIsNone(desired.service("coding"))
-        self.assertEqual(
-            tuple(str(service.name) for service in desired.services()), ("memory",)
-        )
+        assert desired.service("coding") is None
+        assert tuple(str(service.name) for service in desired.services()) == ("memory",)
 
 
-class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
+class TestExactRuntimeLaunchSupply:
     def test_launch_requires_exact_revision_and_runtime_scoped_remote_code_grant(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -409,7 +411,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 trust_grants=lambda: grants,
             )
 
-            with self.assertRaisesRegex(CapabilityValidationError, "not trusted"):
+            with pytest.raises(CapabilityValidationError, match="not trusted"):
                 supply.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
             grants.append(
@@ -425,7 +427,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 config.services["coding"], "127.0.0.1", 49152
             )
 
-            self.assertIn("--trust-remote-code", prepared.argv)
+            assert "--trust-remote-code" in prepared.argv
 
     def test_launch_fails_closed_without_security_or_integrity_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -449,7 +451,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 model_security=MissingSecurity(),
                 model_verifier=_verified_model,
             )
-            with self.assertRaisesRegex(CapabilityValidationError, "security gate"):
+            with pytest.raises(CapabilityValidationError, match="security gate"):
                 missing.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
             corrupt = ExactRuntimeLaunchSupply(
@@ -462,7 +464,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                     "incomplete", "cache-integrity", ("hash mismatch",)
                 ),
             )
-            with self.assertRaisesRegex(CapabilityValidationError, "security gate"):
+            with pytest.raises(CapabilityValidationError, match="security gate"):
                 corrupt.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
     def test_launch_resolves_current_physical_supply_at_execution_time(self):
@@ -491,7 +493,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 config.services["coding"], "127.0.0.1", 49152
             )
 
-            self.assertEqual(prepared.argv[0], runtime.launcher[0])
+            assert prepared.argv[0] == runtime.launcher[0]
 
     def test_launch_uses_configured_installation_and_exact_cached_revision(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -516,33 +518,26 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 config.services["coding"], "127.0.0.1", 49152
             )
 
-            self.assertEqual(
-                prepared.argv,
-                (
-                    str(runtime.root / "bin/optiq"),
-                    "serve",
-                    "--model",
-                    str(model.snapshot_path.resolve()),
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    "49152",
-                    "--kv-config",
-                    str((model.snapshot_path / "kv_config.json").resolve()),
-                    "--mtp",
-                ),
+            assert prepared.argv == (
+                str(runtime.root / "bin/optiq"),
+                "serve",
+                "--model",
+                str(model.snapshot_path.resolve()),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "49152",
+                "--kv-config",
+                str((model.snapshot_path / "kv_config.json").resolve()),
+                "--mtp",
             )
-            self.assertEqual(
-                prepared.environment,
-                {
-                    "METAL_DEVICE_WRAPPER_TYPE": "1",
-                    "MLXCTL_SERVICE_NAME": "coding",
-                    "HF_HUB_OFFLINE": "1",
-                },
-            )
-            self.assertEqual(
-                prepared.required_capabilities,
-                frozenset({"model", "host", "port", "kv_config", "mtp"}),
+            assert prepared.environment == {
+                "METAL_DEVICE_WRAPPER_TYPE": "1",
+                "MLXCTL_SERVICE_NAME": "coding",
+                "HF_HUB_OFFLINE": "1",
+            }
+            assert prepared.required_capabilities == frozenset(
+                {"model", "host", "port", "kv_config", "mtp"}
             )
 
     def test_launch_accepts_hugging_face_blob_symlink_without_allowing_escape(self):
@@ -582,14 +577,14 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
             )
 
             kv_index = prepared.argv.index("--kv-config") + 1
-            self.assertEqual(prepared.argv[kv_index], str(blob.resolve()))
+            assert prepared.argv[kv_index] == str(blob.resolve())
 
             outside = root / "outside.json"
             outside.write_text("{}")
             (snapshot / "kv_config.json").unlink()
             (snapshot / "kv_config.json").symlink_to(outside)
-            with self.assertRaisesRegex(
-                CapabilityValidationError, "exact cached model snapshot"
+            with pytest.raises(
+                CapabilityValidationError, match="exact cached model snapshot"
             ):
                 supply.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
@@ -619,7 +614,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 model_security=_AllowingModelSecurity(),
                 model_verifier=_verified_model,
             )
-            with self.assertRaisesRegex(CapabilityValidationError, "runtime version"):
+            with pytest.raises(CapabilityValidationError, match="runtime version"):
                 supply.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
             wrong_revision_identity = SuppliedRevision(
@@ -643,7 +638,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 model_security=_AllowingModelSecurity(),
                 model_verifier=_verified_model,
             )
-            with self.assertRaisesRegex(CapabilityValidationError, "model revision"):
+            with pytest.raises(CapabilityValidationError, match="model revision"):
                 supply.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
     def test_launch_rejects_missing_cache_artifacts_and_unobserved_capabilities(self):
@@ -664,7 +659,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 model_security=_AllowingModelSecurity(),
                 model_verifier=_verified_model,
             )
-            with self.assertRaisesRegex(CapabilityValidationError, "kv_config"):
+            with pytest.raises(CapabilityValidationError, match="kv_config"):
                 supply.prepare_launch(config.services["coding"], "127.0.0.1", 49152)
 
             runtime_without_mtp = SuppliedRuntimeInstallation(
@@ -690,7 +685,7 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
                 model_security=_AllowingModelSecurity(),
                 model_verifier=_verified_model,
             )
-            with self.assertRaises(UnsupportedLaunchOption):
+            with pytest.raises(UnsupportedLaunchOption):
                 supply.prepare_launch(
                     config_without_mtp.services["coding"], "127.0.0.1", 49152
                 )
@@ -732,7 +727,3 @@ class ExactRuntimeLaunchSupplyTests(unittest.TestCase):
             ),
         )
         return runtime, model
-
-
-if __name__ == "__main__":
-    unittest.main()

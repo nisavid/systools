@@ -1,5 +1,8 @@
-import unittest
+from collections.abc import Mapping, MutableMapping
 from dataclasses import replace
+from typing import cast
+
+import pytest
 
 from mlxctl.application.setup import (
     CapacityProfile,
@@ -38,8 +41,9 @@ def _selection(*, service: str, revision: str) -> ExactSetupSelection:
     )
 
 
-class SetupV1Tests(unittest.TestCase):
-    def setUp(self) -> None:
+class TestSetupV1:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.compact = RecommendedProfile(
             "compact", 16 * GIB, _selection(service="compact", revision="1" * 40)
         )
@@ -82,15 +86,15 @@ class SetupV1Tests(unittest.TestCase):
             planner.plan(facts, SetupRequest(capacity_profile="native-context"))
         )
 
-        self.assertEqual(balanced.capacity_profile, "balanced")
-        self.assertEqual(balanced.context_window, 131_072)
-        self.assertEqual(balanced.service_options["max_context"], 131_072)
-        self.assertEqual(balanced.service_options["max_concurrent"], 6)
-        self.assertEqual(balanced.service_options["prompt_cache_bytes"], 2 * GIB)
-        self.assertEqual(balanced.projected_kv_bytes, 5_737_807_872)
-        self.assertEqual(native.capacity_profile, "native-context")
-        self.assertEqual(native.context_window, 262_144)
-        self.assertEqual(native.service_options["max_concurrent"], 3)
+        assert balanced.capacity_profile == "balanced"
+        assert balanced.context_window == 131_072
+        assert balanced.service_options["max_context"] == 131_072
+        assert balanced.service_options["max_concurrent"] == 6
+        assert balanced.service_options["prompt_cache_bytes"] == 2 * GIB
+        assert balanced.projected_kv_bytes == 5_737_807_872
+        assert native.capacity_profile == "native-context"
+        assert native.context_window == 262_144
+        assert native.service_options["max_concurrent"] == 3
 
     def test_selected_client_context_cannot_exceed_service_capacity(self) -> None:
         invalid = _selection(service="coding", revision="3" * 40)
@@ -104,7 +108,7 @@ class SetupV1Tests(unittest.TestCase):
             context_window=196_608,
         )
 
-        with self.assertRaisesRegex(ValueError, "context_window.*max_context"):
+        with pytest.raises(ValueError, match="context_window.*max_context"):
             invalid.validate_exact()
 
     def test_exact_selection_is_not_overwritten_by_default_capacity(self) -> None:
@@ -138,9 +142,9 @@ class SetupV1Tests(unittest.TestCase):
             SetupRequest(selection=exact, noninteractive=True, confirmed=True),
         )
 
-        self.assertIsNone(plan.capacity_profile)
-        self.assertEqual(plan.selection.context_window, 262_144)
-        self.assertEqual(plan.selection.service_options["max_concurrent"], 3)
+        assert plan.capacity_profile is None
+        assert plan.selection.context_window == 262_144
+        assert plan.selection.service_options["max_concurrent"] == 3
 
     def test_guided_plan_preselects_a_machine_aware_editable_exact_profile(
         self,
@@ -157,20 +161,20 @@ class SetupV1Tests(unittest.TestCase):
 
         preview = self.planner.preview(plan)
 
-        self.assertEqual(plan.profile_name, "workstation")
-        self.assertTrue(preview.editable)
-        self.assertEqual(preview.runtime, "optiq==0.2.18")
-        self.assertEqual(preview.model_revision, "2" * 40)
-        self.assertEqual(preview.service_name, "coding")
-        self.assertEqual(preview.model_alias, "coding")
-        self.assertEqual(preview.service_route, "coding")
-        self.assertEqual(preview.activation, "manual")
-        self.assertFalse(preview.pinned)
-        self.assertEqual(preview.service_options["kv_config"], "kv_config.json")
-        self.assertEqual(preview.gateway_endpoint, "http://127.0.0.1:8766/v1")
-        self.assertEqual(preview.clients, ("codex", "hindsight"))
-        self.assertEqual(preview.client_options["hindsight"]["profile"], "default")
-        self.assertEqual(preview.sampling_profiles["coding"]["temperature"], 0.0)
+        assert plan.profile_name == "workstation"
+        assert preview.editable
+        assert preview.runtime == "optiq==0.2.18"
+        assert preview.model_revision == "2" * 40
+        assert preview.service_name == "coding"
+        assert preview.model_alias == "coding"
+        assert preview.service_route == "coding"
+        assert preview.activation == "manual"
+        assert not preview.pinned
+        assert preview.service_options["kv_config"] == "kv_config.json"
+        assert preview.gateway_endpoint == "http://127.0.0.1:8766/v1"
+        assert preview.clients == ("codex", "hindsight")
+        assert preview.client_options["hindsight"]["profile"] == "default"
+        assert preview.sampling_profiles["coding"]["temperature"] == 0.0
 
     def test_guided_setup_never_falls_back_to_an_oversized_profile(self) -> None:
         undersized = SetupPreflight(
@@ -181,14 +185,14 @@ class SetupV1Tests(unittest.TestCase):
             online=True,
         )
 
-        with self.assertRaisesRegex(ValueError, "no recommended setup profile fits"):
+        with pytest.raises(ValueError, match="no recommended setup profile fits"):
             self.planner.plan(undersized)
 
         expert = self.planner.plan(
             undersized,
             SetupRequest(selection=self.compact.selection),
         )
-        self.assertEqual(expert.profile_name, "custom")
+        assert expert.profile_name == "custom"
 
     def test_service_identity_and_options_are_exact_immutable_plan_inputs(self) -> None:
         facts = SetupPreflight("darwin", "arm64", 64 * GIB, 200 * GIB, True)
@@ -220,16 +224,17 @@ class SetupV1Tests(unittest.TestCase):
         verify = next(step for step in plan.steps if step.id == "verify.request")
 
         options["mtp"] = False
-        self.assertTrue(exact.service_options["mtp"])
-        self.assertEqual(exact.service_options["runtime"]["draft_tokens"], 4)
-        with self.assertRaises(TypeError):
-            exact.service_options["mtp"] = False  # type: ignore[index]
-        self.assertEqual(service.inputs["model_alias"], "qwen-optiq")
-        self.assertEqual(service.inputs["route"], "coding")
-        self.assertEqual(service.inputs["activation"], "supervisor")
-        self.assertTrue(service.inputs["pinned"])
-        self.assertEqual(gateway.inputs["route"], "coding")
-        self.assertEqual(verify.inputs["model"], "coding")
+        assert exact.service_options["mtp"]
+        assert isinstance(exact.service_options["runtime"], Mapping)
+        assert exact.service_options["runtime"]["draft_tokens"] == 4
+        with pytest.raises(TypeError):
+            cast(MutableMapping[str, object], exact.service_options)["mtp"] = False
+        assert service.inputs["model_alias"] == "qwen-optiq"
+        assert service.inputs["route"] == "coding"
+        assert service.inputs["activation"] == "supervisor"
+        assert service.inputs["pinned"]
+        assert gateway.inputs["route"] == "coding"
+        assert verify.inputs["model"] == "coding"
 
     def test_service_names_activation_and_json_options_are_validated(self) -> None:
         facts = SetupPreflight("darwin", "arm64", 64 * GIB, 200 * GIB, True)
@@ -243,10 +248,10 @@ class SetupV1Tests(unittest.TestCase):
             service_name="not safe",
             gateway_endpoint="http://127.0.0.1:8766/v1",
         )
-        with self.assertRaisesRegex(ValueError, "resource name"):
+        with pytest.raises(ValueError, match="resource name"):
             self.planner.plan(facts, SetupRequest(selection=invalid_name))
 
-        with self.assertRaisesRegex(ValueError, "service_options"):
+        with pytest.raises(ValueError, match="service_options"):
             ExactSetupSelection(
                 runtime_name="optiq",
                 runtime_version="0.3.3",
@@ -274,12 +279,12 @@ class SetupV1Tests(unittest.TestCase):
             gateway_endpoint="http://127.0.0.1:8766/v1",
         )
 
-        with self.assertRaisesRegex(ValueError, "trust_grants"):
+        with pytest.raises(ValueError, match="trust_grants"):
             self.planner.plan(
                 facts,
                 SetupRequest(selection=incomplete, noninteractive=True, confirmed=True),
             )
-        with self.assertRaisesRegex(ValueError, "confirmed"):
+        with pytest.raises(ValueError, match="confirmed"):
             self.planner.plan(
                 facts,
                 SetupRequest(
@@ -299,7 +304,7 @@ class SetupV1Tests(unittest.TestCase):
             service_name="coding",
             gateway_endpoint="http://127.0.0.1:8766/v1",
         )
-        with self.assertRaisesRegex(ValueError, "runtime_lock_digest"):
+        with pytest.raises(ValueError, match="runtime_lock_digest"):
             self.planner.plan(
                 facts,
                 SetupRequest(selection=not_locked, noninteractive=True, confirmed=True),
@@ -315,7 +320,7 @@ class SetupV1Tests(unittest.TestCase):
             service_name="coding",
             gateway_endpoint="http://localhost:8766/v1",
         )
-        with self.assertRaisesRegex(ValueError, "literal HTTP loopback"):
+        with pytest.raises(ValueError, match="literal HTTP loopback"):
             self.planner.plan(
                 facts,
                 SetupRequest(
@@ -341,10 +346,10 @@ class SetupV1Tests(unittest.TestCase):
             evidence=(evidence,),
         )
 
-        self.assertNotIn("model.install", executed)
-        self.assertEqual(executed[-1], "verify.request")
-        self.assertEqual(result.evidence[-1].step_id, "verify.request")
-        self.assertTrue(result.complete)
+        assert "model.install" not in executed
+        assert executed[-1] == "verify.request"
+        assert result.evidence[-1].step_id == "verify.request"
+        assert result.complete
 
     def test_changed_supervisor_protocol_invalidates_old_activation_evidence(
         self,
@@ -363,8 +368,8 @@ class SetupV1Tests(unittest.TestCase):
             step for step in resumed.steps if step.id == "supervisor.activate"
         )
 
-        self.assertEqual(activation.state, StepState.READY)
-        self.assertNotEqual(activation.fingerprint, old_fingerprint)
+        assert activation.state == StepState.READY
+        assert activation.fingerprint != old_fingerprint
 
     def test_apply_records_only_completed_steps_before_a_failure(self) -> None:
         facts = SetupPreflight("darwin", "arm64", 64 * GIB, 200 * GIB, True)
@@ -376,19 +381,16 @@ class SetupV1Tests(unittest.TestCase):
                 raise RuntimeError("download interrupted")
             return SetupEvidence.complete(step)
 
-        with self.assertRaises(PlanExecutionError) as failure:
+        with pytest.raises(PlanExecutionError) as failure:
             self.planner.apply(plan, execute, record=recorded.append)
 
-        self.assertEqual(failure.exception.step_id, "model.install")
-        self.assertEqual(
-            [item.step_id for item in recorded],
-            [
-                "preflight",
-                "gateway.configure",
-                "supervisor.activate",
-                "runtime.install",
-            ],
-        )
+        assert failure.value.step_id == "model.install"
+        assert [item.step_id for item in recorded] == [
+            "preflight",
+            "gateway.configure",
+            "supervisor.activate",
+            "runtime.install",
+        ]
 
     def test_offline_plan_exposes_evidence_and_blocks_missing_network_artifacts(
         self,
@@ -397,13 +399,13 @@ class SetupV1Tests(unittest.TestCase):
             SetupPreflight("darwin", "arm64", 64 * GIB, 200 * GIB, False)
         )
 
-        self.assertTrue(plan.offline)
+        assert plan.offline
         runtime = next(step for step in plan.steps if step.id == "runtime.install")
         model = next(step for step in plan.steps if step.id == "model.install")
-        self.assertEqual(runtime.state, StepState.BLOCKED)
-        self.assertIn("offline", runtime.reason)
-        self.assertEqual(model.state, StepState.BLOCKED)
-        self.assertIn("No completed evidence", self.planner.preview(plan).offline_note)
+        assert runtime.state == StepState.BLOCKED
+        assert "offline" in runtime.reason
+        assert model.state == StepState.BLOCKED
+        assert "No completed evidence" in self.planner.preview(plan).offline_note
 
     def test_removal_is_reference_aware_and_retains_shared_and_unrelated_state(
         self,
@@ -422,21 +424,14 @@ class SetupV1Tests(unittest.TestCase):
 
         plan = self.planner.plan_removal(inventory)
 
-        self.assertEqual(
-            tuple(step.id for step in plan.steps),
-            (
-                "service.drain",
-                "service.stop",
-                "supervisor.unregister",
-                "client.remove",
-                "state.remove",
-            ),
+        assert tuple(step.id for step in plan.steps) == (
+            "service.drain",
+            "service.stop",
+            "supervisor.unregister",
+            "client.remove",
+            "state.remove",
         )
-        self.assertEqual(plan.freed_bytes_estimate, 2 * GIB)
-        self.assertEqual(plan.retained_paths, inventory.shared_cache_paths)
-        self.assertEqual(plan.retained_settings, inventory.unrelated_settings)
-        self.assertIn("coding", plan.references)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert plan.freed_bytes_estimate == 2 * GIB
+        assert plan.retained_paths == inventory.shared_cache_paths
+        assert plan.retained_settings == inventory.unrelated_settings
+        assert "coding" in plan.references

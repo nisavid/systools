@@ -33,6 +33,7 @@ from mlxctl.infrastructure.runtime_supply import (
 from mlxctl.infrastructure.runtime_supply import RuntimeLaunchBuilder
 from mlxctl.infrastructure.supervisor_v1 import (
     CapabilityValidationError,
+    ManagedProcess,
     PreparedLaunch,
     ProcessIdentity,
 )
@@ -248,7 +249,7 @@ class MacOSProcessProbe:
         self._process_factory = process_factory
         self._transport = transport
 
-    def identity(self, process: SubprocessManagedProcess) -> ProcessIdentity:
+    def identity(self, process: ManagedProcess) -> ProcessIdentity:
         observed = self._process_factory(process.pid)
         return ProcessIdentity(process.pid, _birth_token(observed.create_time()))
 

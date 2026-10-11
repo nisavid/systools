@@ -8,10 +8,11 @@ import plistlib
 import shutil
 import stat
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 import httpx
 import psutil
@@ -127,7 +128,7 @@ class OwnedStateRemover:
             )
         requested = tuple(
             Path(str(item)).expanduser().absolute()
-            for item in parameters.get("paths", ())
+            for item in cast(Iterable[object], parameters.get("paths", ()))
         )
         if any(path not in self._owned for path in requested):
             raise ApplicationError(
@@ -159,7 +160,7 @@ class SystemSetupPreflight:
         return SetupPreflight(
             platform=platform.system().lower(),
             machine=platform.machine().lower(),
-            memory_bytes=int(memory.total),
+            memory_bytes=memory.total,
             disk_free_bytes=shutil.disk_usage(self._paths.data_dir).free,
             online=False if offline else self._online_probe(),
         )
@@ -299,9 +300,14 @@ def client_port(
                 )
             ),
             max_concurrent=int(
-                parameters.get(
-                    "max_concurrent",
-                    stored.max_concurrent if stored and stored.max_concurrent else 1,
+                cast(
+                    int | str,
+                    parameters.get(
+                        "max_concurrent",
+                        stored.max_concurrent
+                        if stored and stored.max_concurrent
+                        else 1,
+                    ),
                 )
             ),
             credential_path=paths.gateway_credential,
@@ -516,8 +522,17 @@ def default_sampling(
             profile = catalogue.profile(repository, revision, profile_name)
         except KeyError:
             return {}
+        sampling = sampling_profile(profile.parameters)
         result[workload] = ClientSamplingSettings(
-            **dict(profile.parameters),
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            top_k=sampling.top_k,
+            min_p=sampling.min_p,
+            presence_penalty=sampling.presence_penalty,
+            repetition_penalty=sampling.repetition_penalty,
+            max_tokens=sampling.max_tokens,
+            enable_thinking=sampling.enable_thinking,
+            preserve_thinking=sampling.preserve_thinking,
             upstream_profile=profile.name,
             source_url=profile.source_url,
             source_revision=profile.source_revision,
