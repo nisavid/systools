@@ -6,8 +6,8 @@ import socket
 import stat
 import tempfile
 import threading
-import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -666,6 +666,8 @@ class TestProductionComposition:
                 router.execute("operation.resume", {"resource": "unknown"})
 
     def test_supervisor_stop_drains_physical_work_and_rejects_new_work(self) -> None:
+        stop_requested = threading.Event()
+
         class BlockingPort(_Port):
             def __init__(self) -> None:
                 super().__init__({"state": "complete"})
@@ -674,41 +676,44 @@ class TestProductionComposition:
 
             def execute(self, operation, parameters):
                 self.entered.set()
-                self.release.wait(1)
+                self.release.wait()
                 return super().execute(operation, parameters)
+
+        class StopObservedRouter(DaemonOperationRouter):
+            def _prepare_stop(self):
+                with self._condition:
+                    stop_requested.set()
+                    super()._prepare_stop()
 
         with tempfile.TemporaryDirectory() as directory:
             runtime = BlockingPort()
             supervisor = _Port({"state": "stopped"})
-            router = DaemonOperationRouter(
+            router = StopObservedRouter(
                 runtime=runtime,
                 model=_Port(),
                 supervisor=supervisor,
                 state=OperationalStateStore(Path(directory) / "state.sqlite3"),
                 physical_drain_timeout=1,
             )
-            physical = threading.Thread(
-                target=lambda: router.execute("runtime.install", {"runtime": "optiq"})
-            )
-            physical.start()
-            assert runtime.entered.wait(1)
-            stopped = []
-            stopping = threading.Thread(
-                target=lambda: stopped.append(router.execute("supervisor.stop", {}))
-            )
-            stopping.start()
-            time.sleep(0.02)
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                try:
+                    physical = workers.submit(
+                        router.execute, "runtime.install", {"runtime": "optiq"}
+                    )
+                    assert runtime.entered.wait(1)
+                    stopping = workers.submit(router.execute, "supervisor.stop", {})
+                    assert stop_requested.wait(1)
 
-            with pytest.raises(ApplicationError) as raised:
-                router.execute("model.install", {"repository": "owner/model"})
-            assert raised.value.code == "supervisor_stopping"
-            assert supervisor.calls == []
+                    with pytest.raises(ApplicationError) as raised:
+                        router.execute("model.install", {"repository": "owner/model"})
+                    assert raised.value.code == "supervisor_stopping"
+                    assert supervisor.calls == []
+                finally:
+                    runtime.release.set()
 
-            runtime.release.set()
-            physical.join(1)
-            stopping.join(1)
-            assert stopped[0]["state"] == "stopped"
-            assert supervisor.calls == [("supervisor.stop", {})]
+                physical.result()
+                assert stopping.result()["state"] == "stopped"
+                assert supervisor.calls == [("supervisor.stop", {})]
 
     def test_state_removal_rejects_symlink_even_when_it_resolves_to_owned_path(
         self,
