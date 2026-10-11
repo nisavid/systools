@@ -8,6 +8,7 @@ import tempfile
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -693,15 +694,16 @@ class TestProductionComposition:
                 model=_Port(),
                 supervisor=supervisor,
                 state=OperationalStateStore(Path(directory) / "state.sqlite3"),
-                physical_drain_timeout=1,
             )
-            with ThreadPoolExecutor(max_workers=2) as workers:
+            with ThreadPoolExecutor(max_workers=2) as workers, ExitStack() as results:
                 try:
                     physical = workers.submit(
                         router.execute, "runtime.install", {"runtime": "optiq"}
                     )
+                    results.callback(physical.result)
                     assert runtime.entered.wait(1)
                     stopping = workers.submit(router.execute, "supervisor.stop", {})
+                    results.callback(stopping.result)
                     assert stop_requested.wait(1)
 
                     with pytest.raises(ApplicationError) as raised:
@@ -711,9 +713,8 @@ class TestProductionComposition:
                 finally:
                     runtime.release.set()
 
-                physical.result()
-                assert stopping.result()["state"] == "stopped"
-                assert supervisor.calls == [("supervisor.stop", {})]
+            assert stopping.result()["state"] == "stopped"
+            assert supervisor.calls == [("supervisor.stop", {})]
 
     def test_state_removal_rejects_symlink_even_when_it_resolves_to_owned_path(
         self,
