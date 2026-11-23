@@ -8,7 +8,10 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import Protocol
 
+from starlette.applications import Starlette
+
 from mlxctl.infrastructure.gateway import (
+    GatewayRequestProfile,
     GatewayRoute,
     create_gateway,
     validate_loopback_bind,
@@ -22,7 +25,7 @@ class GatewayServer(Protocol):
     def run(self) -> None: ...
 
 
-ServerFactory = Callable[[object, str, int], GatewayServer]
+ServerFactory = Callable[[Starlette, str, int], GatewayServer]
 
 
 class GatewayRuntime:
@@ -40,6 +43,8 @@ class GatewayRuntime:
         max_in_flight_per_service: int = 4,
         metric_sink: Callable[[Mapping[str, object]], object] | None = None,
         authenticate: Callable[[str | None], bool] | None = None,
+        profile_resolver: Callable[[str, str], GatewayRequestProfile | None]
+        | None = None,
     ) -> None:
         validate_loopback_bind(host)
         if not 1 <= port <= 65535:
@@ -55,6 +60,7 @@ class GatewayRuntime:
         self._max_in_flight_per_service = max_in_flight_per_service
         self._metric_sink = metric_sink or (lambda _metric: None)
         self._authenticate = authenticate
+        self._profile_resolver = profile_resolver
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._routes: dict[str, GatewayRoute] = {}
@@ -77,6 +83,7 @@ class GatewayRuntime:
                 bind_host=self.host,
                 activity=self,
                 authenticate=self._authenticate,
+                profile_resolver=self._profile_resolver,
             )
             server = self._server_factory(app, self.host, self.port)
             thread = threading.Thread(
@@ -119,7 +126,7 @@ class GatewayRuntime:
             previous = self._routes.get(service)
             self._routes[service] = GatewayRoute(
                 service=service,
-                state=state,  # type: ignore[arg-type]
+                state=state,
                 endpoint=endpoint,
                 model=previous.model if previous else None,
                 runtime=previous.runtime if previous else None,
@@ -214,7 +221,7 @@ class GatewayRuntime:
         self._metric_sink({"kind": "service_request", "scope": "service", **common})
 
 
-def _uvicorn_server(app: object, host: str, port: int) -> GatewayServer:
+def _uvicorn_server(app: Starlette, host: str, port: int) -> GatewayServer:
     import uvicorn
 
     config = uvicorn.Config(

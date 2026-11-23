@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Mapping
 
 
 class OperationKind(StrEnum):
@@ -185,6 +185,8 @@ _LOCAL_MUTATIONS = frozenset(
         "config.restore",
     }
 )
+# These mutations may use a running Supervisor but must never start one.
+_NEVER_START_MUTATIONS = _LOCAL_MUTATIONS | {"supervisor.stop"}
 
 
 def build_operation_catalogue() -> Mapping[str, Operation]:
@@ -198,7 +200,7 @@ def build_operation_catalogue() -> Mapping[str, Operation]:
             if kind is OperationKind.MUTATION:
                 if name in {"setup", "service.start"}:
                     supervisor = SupervisorRequirement.MAY_START
-                elif name not in _LOCAL_MUTATIONS:
+                elif name not in _NEVER_START_MUTATIONS:
                     supervisor = SupervisorRequirement.REQUIRED
             summary = _summary(name)
             operations[name] = Operation(
@@ -345,6 +347,11 @@ def _parameters(name: str) -> tuple[Parameter, ...]:
                 "profile",
                 "Setup profile to preselect; the complete plan remains editable.",
                 accepted=("recommended", "expert"),
+            ),
+            _option(
+                "capacity",
+                "Capacity profile: balanced allows 6 simultaneous inference requests at 128K; long-context allows 4 at 192K; native-context allows 3 at 256K. OptiQ 0.3.3 retains one simultaneous prefill at 4-7 requests; 8 permits two and is riskier on 48 GiB Macs.",
+                accepted=("balanced", "long-context", "native-context"),
             ),
             _option(
                 "offline",

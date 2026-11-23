@@ -2,8 +2,8 @@
 
 ## Route work by context
 
-Read `CONTEXT-MAP.md` before planning or editing. For every changed
-`tools/<tool>/` path, read that tool's `CONTEXT.md`. Root-wide work has no
+Read `GLOSSARY-MAP.md` before planning or editing. For every changed
+`tools/<tool>/` path, read that tool's `GLOSSARY.md`. Root-wide work has no
 product glossary unless the map assigns one. Use the selected context's
 vocabulary in code, tests, documentation, issues, and commits.
 
@@ -21,7 +21,7 @@ with the repository that owns the deployment before publication.
 
 - `README.md` files are human-facing entrypoints. Route readers by goal and
   keep commands and behavioral claims verified against the current product.
-- `CONTEXT.md` files define agent-facing domain language. Update them only when
+- `GLOSSARY.md` files define agent-facing domain language. Update them only when
   the domain model changes.
 - `AGENTS.md` contains executable agent instructions. Keep each rule
   repository-specific, checkable, and in one authoritative location.
@@ -33,30 +33,36 @@ paths and public URLs in committed prose.
 
 ## Validate the owning subproject
 
-Run Python checks for `tools/mlxctl/` from that directory:
+Use the declared uv version and run the locked checks for `tools/mlxctl/`
+from that directory:
 
 ```sh
-uv run python -m unittest discover -s tests
-uvx ruff check .
-uvx ruff format --check .
-uv build
+sh scripts/check.sh
+sh scripts/check-wheel.sh
 ```
+
+Read the development section in `tools/mlxctl/README.md` for toolchain
+selection, supported interpreters, and what these checks establish. Keep
+local and hosted validation on these same scripts.
 
 Changes to the deployment contract also require validation in the dotfiles
-repository and a scoped installation check. Changes to root Serena or context
-routing require:
-
-```sh
-serena project health-check .
-serena memories check
-```
+repository and a scoped installation check.
 
 Every change requires `git diff --check`. Commit messages follow the
 Conventional Commit policy enforced by `cog.toml` and the repository hooks.
 
-## Keep Serena repository-scoped
+## Agent skills
 
-Use one Serena project rooted at this Git repository. Keep checkout identity in
-ignored `.serena/project.local.yml`, repository-wide memories under `repo/*`,
-and tool memories under the matching tool namespace such as `mlxctl/*`.
-Sibling worktrees are separate checkouts, not Serena workspace folders.
+### Issue tracker
+
+Track repository work in `nisavid/systools` GitHub Issues. Read
+`docs/agents/issue-tracker.md` before ticket operations.
+
+### Triage labels
+
+Use the five canonical triage labels in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo has one context per tool. Read `docs/agents/domain.md` for the
+existing context map, glossary locations, and ADR consumer rules.

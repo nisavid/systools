@@ -4,29 +4,30 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from mlxctl.application.dispatch import OperationRequest
+from mlxctl.application.dispatch import OperationRequest, OperationResult
+from mlxctl.infrastructure.launchd import LaunchdStatus
 from mlxctl.interfaces.tui import ServiceSnapshot, TuiSnapshot
-
 
 _RESOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 class LaunchdPort(Protocol):
-    def status(self): ...
+    def status(self) -> LaunchdStatus: ...
 
-    def register(self): ...
+    def register(self) -> LaunchdStatus: ...
 
-    def kickstart(self): ...
+    def kickstart(self) -> LaunchdStatus: ...
 
 
 class StatusDispatcher(Protocol):
-    def execute(self, request: OperationRequest): ...
+    def execute(self, request: OperationRequest) -> OperationResult: ...
 
 
 class MetricsStore(Protocol):
@@ -53,7 +54,7 @@ class LaunchdSupervisorActivator:
         self._socket_path = Path(socket_path)
         self._timeout = timeout_seconds
         self._poll = poll_interval
-        self._socket_ready = socket_ready or _private_socket_ready
+        self._socket_ready = socket_ready or private_socket_ready
         self._monotonic = monotonic
         self._sleep = sleep
 
@@ -194,12 +195,21 @@ class StateMetricsSource:
         )
 
 
-def _private_socket_ready(path: Path) -> bool:
+def private_socket_ready(path: Path) -> bool:
     try:
         metadata = path.lstat()
     except FileNotFoundError:
         return False
-    return stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid == os.getuid()
+    if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.getuid():
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.2)
+        return probe.connect_ex(str(path)) == 0
+    except OSError:
+        return False
+    finally:
+        probe.close()
 
 
 def _mapping(value: object) -> Mapping[str, object]:

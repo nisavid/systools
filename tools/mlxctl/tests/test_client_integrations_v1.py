@@ -1,38 +1,444 @@
 import json
+import math
+import shutil
 import stat
 import tempfile
-import unittest
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 import tomlkit
+from tomlkit.exceptions import ParseError
 
 from mlxctl.application.config_schema import ClientSettings
 from mlxctl.infrastructure.client_integrations import (
     ClientConfiguration,
     ClientIntegrationConflict,
     CodexClientIntegration,
+    CodexModelMetadata,
     HindsightClientIntegration,
     LocalClientIntegrationFactory,
     SamplingProfile,
 )
 
 
-class ClientIntegrationV1Tests(unittest.TestCase):
-    def setUp(self) -> None:
+class TestClientIntegrationV1:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.configuration = ClientConfiguration(
             gateway_endpoint="http://127.0.0.1:8766/v1",
             service_name="coding",
             context_window=32768,
             sampling_profiles={
-                "coding": SamplingProfile(temperature=0.0, top_p=0.95),
-                "retain": SamplingProfile(temperature=0.1, top_p=0.9),
-                "reflect": SamplingProfile(temperature=0.9, top_p=0.95),
+                "verification": SamplingProfile(
+                    temperature=0.7,
+                    top_p=0.8,
+                    top_k=20,
+                    min_p=0.0,
+                    presence_penalty=1.5,
+                    repetition_penalty=1.0,
+                    enable_thinking=False,
+                ),
+                "coding": SamplingProfile(
+                    temperature=0.6,
+                    top_p=0.95,
+                    top_k=20,
+                    min_p=0.0,
+                    presence_penalty=0.0,
+                    repetition_penalty=1.0,
+                    enable_thinking=True,
+                ),
+                "retain": SamplingProfile(
+                    temperature=0.7,
+                    top_p=0.8,
+                    top_k=20,
+                    min_p=0.0,
+                    presence_penalty=1.5,
+                    repetition_penalty=1.0,
+                    enable_thinking=False,
+                ),
+                "reflect": SamplingProfile(
+                    temperature=1.0,
+                    top_p=0.95,
+                    top_k=20,
+                    min_p=0.0,
+                    presence_penalty=1.5,
+                    repetition_penalty=1.0,
+                    enable_thinking=True,
+                ),
+                "consolidation": SamplingProfile(
+                    temperature=0.7,
+                    top_p=0.8,
+                    top_k=20,
+                    min_p=0.0,
+                    presence_penalty=1.5,
+                    repetition_penalty=1.0,
+                    enable_thinking=False,
+                ),
             },
-            codex_provider_id="mlxctl-local",
+            codex_provider_id="mlx-local",
             hindsight_provider="openai",
             max_concurrent=1,
         )
+
+    @staticmethod
+    def _bundled_codex_catalog() -> dict[str, object]:
+        return {
+            "models": [
+                {
+                    "slug": "bundled-coding",
+                    "display_name": "Bundled coding",
+                    "description": "Bundled model",
+                    "base_instructions": "You are Codex, the bundled coding agent.",
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": ["low", "medium", "high"],
+                    "supports_reasoning_summaries": True,
+                    "supports_parallel_tool_calls": True,
+                    "supports_image_detail_original": True,
+                    "supports_search_tool": True,
+                    "use_responses_lite": True,
+                    "input_modalities": ["text", "image"],
+                    "context_window": 200_000,
+                    "max_context_window": 200_000,
+                    "visibility": "list",
+                }
+            ]
+        }
+
+    def test_codex_catalog_is_owned_version_shaped_and_reversible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            manifest = root / "owner.json"
+            backup = root / "config.backup"
+            catalog = root / "model-catalog.json"
+            catalog_backup = root / "model-catalog.backup"
+            configuration = replace(
+                self.configuration,
+                context_window=131_072,
+                service_name="qwen36-optiq",
+                codex_model=CodexModelMetadata(
+                    slug="qwen36-optiq",
+                    display_name="Qwen3.6 35B A3B OptiQ 4-bit",
+                    description="Local Qwen3.6 mixture-of-experts coding model.",
+                ),
+            )
+            adapter = CodexClientIntegration(
+                config,
+                manifest,
+                backup,
+                catalog_path=catalog,
+                catalog_backup_path=catalog_backup,
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+
+            preview = adapter.preview(configuration)
+            first = adapter.apply(configuration)
+            second = adapter.apply(configuration)
+
+            document = tomlkit.parse(config.read_text(encoding="utf-8"))
+            rendered = json.loads(catalog.read_text(encoding="utf-8"))
+            model = rendered["models"][0]
+            ownership = json.loads(manifest.read_text(encoding="utf-8"))
+            assert ("model_catalog_json",) in {item.path for item in preview}
+            assert first.changed
+            assert not second.changed
+            assert document["model_catalog_json"] == str(catalog)
+            assert model["slug"] == "qwen36-optiq"
+            assert model["context_window"] == 131_072
+            assert model["max_context_window"] == 131_072
+            assert (
+                model["base_instructions"] == "You are Codex, the bundled coding agent."
+            )
+            assert model["supported_reasoning_levels"] == []
+            assert model["default_reasoning_level"] is None
+            assert model["input_modalities"] == ["text"]
+            assert not model["supports_parallel_tool_calls"]
+            assert not model["supports_search_tool"]
+            assert not model["use_responses_lite"]
+            assert "apply_patch_tool_type" not in model
+            assert "web_search_tool_type" not in model
+            assert model["additional_speed_tiers"] == []
+            assert model["service_tiers"] == []
+            assert ownership["catalog"]["slug"] == "qwen36-optiq"
+            assert ownership["catalog"]["context_window"] == 131_072
+
+            removed = adapter.remove()
+            assert removed.changed
+            assert not catalog.exists()
+            assert not manifest.exists()
+
+    def test_codex_catalog_inspect_reports_and_repair_fixes_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.json"
+            configuration = replace(
+                self.configuration,
+                context_window=196_608,
+                codex_model=CodexModelMetadata(
+                    slug="coding",
+                    display_name="Local coding model",
+                    description="Local model",
+                ),
+            )
+            adapter = CodexClientIntegration(
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                catalog_path=catalog,
+                catalog_backup_path=root / "catalog.backup",
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+            adapter.apply(configuration)
+            catalog.write_text('{"models": []}\n', encoding="utf-8")
+
+            drifted = adapter.inspect()
+            repaired = adapter.apply(configuration)
+            healthy = adapter.inspect()
+
+            assert drifted["state"] == "drifted"
+            assert isinstance(drifted["next_actions"], (list, tuple, Mapping, str))
+            assert "mlxctl client configure codex" in drifted["next_actions"]
+            assert repaired.changed
+            assert healthy["state"] == "healthy"
+
+    def test_legacy_codex_ownership_requires_catalog_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = CodexClientIntegration(
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+            adapter.apply(self.configuration)
+
+            report = adapter.inspect()
+
+            assert report["state"] == "missing"
+            assert isinstance(report["next_actions"], (list, tuple, Mapping, str))
+            assert "mlxctl client configure codex" in report["next_actions"]
+
+    def test_codex_inspect_detects_real_config_catalog_pointer_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = replace(
+                self.configuration,
+                context_window=131_072,
+                codex_model=CodexModelMetadata("coding", "Coding", "Local model"),
+            )
+            adapter = CodexClientIntegration(
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                catalog_path=root / "catalog.json",
+                catalog_backup_path=root / "catalog.backup",
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+            adapter.apply(configuration)
+            document = tomlkit.parse((root / "config.toml").read_text())
+            document["model_catalog_json"] = "/tmp/other-catalog.json"
+            (root / "config.toml").write_text(document.as_string())
+
+            report = adapter.inspect()
+
+            assert report["state"] == "drifted"
+            assert isinstance(report["detail"], str)
+            assert "model_catalog_json" in report["detail"]
+
+    def test_legacy_codex_migration_restores_preexisting_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = root / "catalog.json"
+            original = b'{"models":[{"slug":"user"}]}\n'
+            adapter = CodexClientIntegration(
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                catalog_path=catalog,
+                catalog_backup_path=root / "catalog.backup",
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+            adapter.apply(self.configuration)
+            catalog.write_bytes(original)
+            document = tomlkit.parse((root / "config.toml").read_text())
+            document["model_catalog_json"] = str(catalog)
+            (root / "config.toml").write_text(document.as_string())
+            adapter.apply(
+                replace(
+                    self.configuration,
+                    context_window=131_072,
+                    codex_model=CodexModelMetadata("coding", "Coding", "Local model"),
+                )
+            )
+
+            adapter.remove()
+
+            assert catalog.read_bytes() == original
+            restored = tomlkit.parse((root / "config.toml").read_text())
+            assert restored["model_catalog_json"] == str(catalog)
+
+    def test_codex_catalog_validation_failure_restores_both_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            catalog = root / "catalog.json"
+            config.write_text('unrelated = "keep"\n', encoding="utf-8")
+            catalog.write_text('{"models":[{"slug":"user"}]}\n', encoding="utf-8")
+
+            def reject(_path: Path) -> None:
+                raise RuntimeError("Codex rejected catalog")
+
+            adapter = CodexClientIntegration(
+                config,
+                root / "owner.json",
+                root / "config.backup",
+                catalog_path=catalog,
+                catalog_backup_path=root / "catalog.backup",
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=reject,
+            )
+            configuration = replace(
+                self.configuration,
+                context_window=131_072,
+                codex_model=CodexModelMetadata(
+                    slug="coding",
+                    display_name="Local coding model",
+                    description="Local model",
+                ),
+            )
+
+            with pytest.raises(RuntimeError, match="rejected"):
+                adapter.apply(configuration)
+
+            assert config.read_text() == 'unrelated = "keep"\n'
+            assert catalog.read_text() == '{"models":[{"slug":"user"}]}\n'
+            assert not (root / "owner.json").exists()
+
+    def test_codex_catalog_remove_failure_rolls_back_all_owned_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                root / "catalog.json",
+                root / "catalog.backup",
+            )
+            configuration = replace(
+                self.configuration,
+                context_window=131_072,
+                codex_model=CodexModelMetadata("coding", "Coding", "Local model"),
+            )
+            paths[3].write_text('{"models":[{"slug":"user"}]}\n')
+            adapter = CodexClientIntegration(
+                *paths[:3],
+                catalog_path=paths[3],
+                catalog_backup_path=paths[4],
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+            adapter.apply(configuration)
+            before = {path: path.read_bytes() for path in paths if path.exists()}
+
+            def fail_catalog(path: Path, payload: bytes) -> None:
+                if path == paths[3]:
+                    raise OSError("catalog replace failed")
+                path.write_bytes(payload)
+
+            failing = CodexClientIntegration(
+                *paths[:3],
+                catalog_path=paths[3],
+                catalog_backup_path=paths[4],
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+                replace=fail_catalog,
+            )
+            with pytest.raises(OSError, match="catalog replace failed"):
+                failing.remove()
+
+            assert {
+                path: path.read_bytes() for path in paths if path.exists()
+            } == before
+
+    def test_codex_catalog_restore_failure_rolls_back_all_owned_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                root / "catalog.json",
+                root / "catalog.backup",
+            )
+            paths[0].write_text('unrelated = "keep"\n')
+            paths[3].write_text('{"models":[{"slug":"user"}]}\n')
+            configuration = replace(
+                self.configuration,
+                context_window=131_072,
+                codex_model=CodexModelMetadata("coding", "Coding", "Local model"),
+            )
+            adapter = CodexClientIntegration(
+                *paths[:3],
+                catalog_path=paths[3],
+                catalog_backup_path=paths[4],
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+            )
+            adapter.apply(configuration)
+            before = {path: path.read_bytes() for path in paths if path.exists()}
+
+            def fail_catalog(path: Path, payload: bytes) -> None:
+                if path == paths[3]:
+                    raise OSError("catalog restore failed")
+                path.write_bytes(payload)
+
+            failing = CodexClientIntegration(
+                *paths[:3],
+                catalog_path=paths[3],
+                catalog_backup_path=paths[4],
+                bundled_catalog=self._bundled_codex_catalog,
+                catalog_validator=lambda _path: None,
+                replace=fail_catalog,
+            )
+            with pytest.raises(OSError, match="catalog restore failed"):
+                failing.restore()
+
+            assert {
+                path: path.read_bytes() for path in paths if path.exists()
+            } == before
+
+    @pytest.mark.skipif(not shutil.which("codex"), reason="Codex is not installed")
+    def test_installed_codex_resolves_catalog_without_fallback_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = CodexClientIntegration(
+                root / "config.toml",
+                root / "owner.json",
+                root / "config.backup",
+                catalog_path=root / "catalog.json",
+                catalog_backup_path=root / "catalog.backup",
+            )
+            result = adapter.apply(
+                replace(
+                    self.configuration,
+                    context_window=131_072,
+                    codex_model=CodexModelMetadata(
+                        slug="qwen36-optiq",
+                        display_name="Qwen3.6 35B A3B OptiQ 4-bit",
+                        description="Local coding model",
+                    ),
+                )
+            )
+
+            assert result.changed
+            assert adapter.inspect()["state"] == "healthy"
 
     def test_codex_preview_apply_and_remove_preserve_unrelated_settings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -54,34 +460,116 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             second = adapter.apply(self.configuration)
 
             document = tomlkit.parse(config.read_text(encoding="utf-8"))
-            self.assertIn(("model",), {change.path for change in preview})
-            self.assertTrue(applied.changed)
-            self.assertFalse(second.changed)
-            self.assertEqual(document["model"], "coding")
-            self.assertEqual(
-                document["model_providers"]["mlxctl-local"]["base_url"],
-                self.configuration.gateway_endpoint,
+            assert ("model",) in {change.path for change in preview}
+            assert applied.changed
+            assert not second.changed
+            assert document["model"] == "coding"
+            assert document["oss_provider"] == "mlx-local"
+            assert (
+                document["model_providers"]["mlx-local"]["base_url"]
+                == "http://127.0.0.1:8766/clients/codex/profiles/coding/v1"
             )
-            self.assertEqual(document["profiles"]["coding"]["temperature"], 0.0)
-            self.assertEqual(document["tui"]["theme"], "catppuccin-mocha")
-            self.assertEqual(
-                document["model_providers"]["existing"]["name"], "Existing"
-            )
-            self.assertIn("# keep this comment", config.read_text(encoding="utf-8"))
-            self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o600)
-            self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+            assert "profiles" not in document
+            assert document["tui"]["theme"] == "catppuccin-mocha"
+            assert document["model_providers"]["existing"]["name"] == "Existing"
+            assert "# keep this comment" in config.read_text(encoding="utf-8")
+            assert stat.S_IMODE(config.stat().st_mode) == 0o600
+            assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+            assert stat.S_IMODE(backup.stat().st_mode) == 0o600
             owned = json.loads(manifest.read_text(encoding="utf-8"))["fields"]
-            self.assertNotIn("tui.theme", {".".join(field["path"]) for field in owned})
+            assert "tui.theme" not in {".".join(field["path"]) for field in owned}
 
             removed = adapter.remove()
             restored = tomlkit.parse(config.read_text(encoding="utf-8"))
 
-            self.assertTrue(removed.changed)
-            self.assertEqual(restored["model"], "cloud")
-            self.assertEqual(restored["model_provider"], "existing")
-            self.assertNotIn("mlxctl-local", restored["model_providers"])
-            self.assertEqual(restored["tui"]["theme"], "catppuccin-mocha")
+            assert removed.changed
+            assert restored["model"] == "cloud"
+            assert restored["model_provider"] == "existing"
+            assert "oss_provider" not in restored
+            assert "mlx-local" not in restored["model_providers"]
+            assert restored["tui"]["theme"] == "catppuccin-mocha"
+
+    def test_codex_apply_migrates_the_owned_legacy_provider_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "codex" / "config.toml"
+            adapter = CodexClientIntegration(
+                config,
+                root / "mlxctl" / "codex-ownership.json",
+                root / "mlxctl" / "codex-config.backup",
+            )
+            legacy = replace(self.configuration, codex_provider_id="mlxctl-local")
+
+            adapter.apply(legacy)
+            adapter.apply(self.configuration)
+
+            document = tomlkit.parse(config.read_text(encoding="utf-8"))
+            assert document["model_provider"] == "mlx-local"
+            assert document["oss_provider"] == "mlx-local"
+            assert "mlx-local" in document["model_providers"]
+            assert "mlxctl-local" not in document["model_providers"]
+
+    def test_managed_clients_fail_closed_on_missing_or_unrepresentable_profiles(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex = CodexClientIntegration(
+                root / "codex.toml", root / "codex-owner.json", root / "codex-backup"
+            )
+            missing_coding = replace(
+                self.configuration,
+                sampling_profiles={
+                    "codng": SamplingProfile(temperature=0.6, top_p=0.95)
+                },
+            )
+            with pytest.raises(ValueError, match="requires sampling profiles"):
+                codex.preview(missing_coding)
+
+            unsupported = replace(
+                self.configuration,
+                sampling_profiles={
+                    "coding": SamplingProfile(
+                        temperature=0.6,
+                        top_p=0.95,
+                        presence_penalty=1.5,
+                    )
+                },
+            )
+            with pytest.raises(ValueError, match="Responses"):
+                codex.preview(unsupported)
+
+            hindsight = HindsightClientIntegration(
+                root / "hindsight.env",
+                root / "hindsight-owner.json",
+                root / "hindsight-backup",
+            )
+            with pytest.raises(ValueError, match="requires sampling profiles"):
+                hindsight.preview(
+                    replace(
+                        self.configuration,
+                        sampling_profiles={"retain": SamplingProfile(temperature=0.7)},
+                    )
+                )
+
+    def test_sampling_profiles_reject_non_finite_values_and_preserve_provenance(
+        self, subtests: pytest.Subtests
+    ) -> None:
+        for value in (math.nan, math.inf, -math.inf):
+            with (
+                subtests.test(value=value),
+                pytest.raises(ValueError, match="finite"),
+            ):
+                SamplingProfile(temperature=value)
+
+        profile = SamplingProfile(
+            temperature=0.6,
+            upstream_profile="precise-coding-thinking",
+            source_url="https://example.test/model-card",
+            source_revision="9" * 40,
+        )
+        assert profile.values() == {"temperature": 0.6}
+        assert profile.definition()["upstream_profile"] == "precise-coding-thinking"
 
     def test_gateway_credential_is_exactly_configured_and_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -98,11 +586,11 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             )
             codex.apply(configuration)
             document = tomlkit.parse(codex_path.read_text(encoding="utf-8"))
-            auth = document["model_providers"]["mlxctl-local"]["auth"]
-            self.assertEqual(auth["command"], "/bin/cat")
-            self.assertEqual(auth["args"], [str(credential)])
-            self.assertEqual(auth["refresh_interval_ms"], 0)
-            self.assertNotIn(token, codex_path.read_text(encoding="utf-8"))
+            auth = document["model_providers"]["mlx-local"]["auth"]
+            assert auth["command"] == "/bin/cat"
+            assert auth["args"] == [str(credential)]
+            assert auth["refresh_interval_ms"] == 0
+            assert token not in codex_path.read_text(encoding="utf-8")
 
             hindsight_path = root / "hindsight.env"
             hindsight_path.write_text(
@@ -119,24 +607,22 @@ class ClientIntegrationV1Tests(unittest.TestCase):
 
             rendered = hindsight_path.read_text(encoding="utf-8")
             manifest = hindsight.manifest_path.read_text(encoding="utf-8")
-            self.assertIn(f"HINDSIGHT_API_LLM_API_KEY={token}", rendered)
-            self.assertEqual(stat.S_IMODE(hindsight_path.stat().st_mode), 0o600)
-            self.assertNotIn(token, repr(preview))
-            self.assertNotIn(token, repr(applied))
-            self.assertNotIn(token, manifest)
-            self.assertNotIn("old-private-token", manifest)
-            self.assertTrue(
-                all(
-                    change.after == "<redacted>"
-                    for change in applied.changes
-                    if change.path == ("HINDSIGHT_API_LLM_API_KEY",)
-                )
+            assert f"HINDSIGHT_API_LLM_API_KEY={token}" in rendered
+            assert stat.S_IMODE(hindsight_path.stat().st_mode) == 0o600
+            assert token not in repr(preview)
+            assert token not in repr(applied)
+            assert token not in manifest
+            assert "old-private-token" not in manifest
+            assert all(
+                change.after == "<redacted>"
+                for change in applied.changes
+                if change.path == ("HINDSIGHT_API_LLM_API_KEY",)
             )
 
             hindsight.remove()
-            self.assertIn(
-                "HINDSIGHT_API_LLM_API_KEY=old-private-token",
-                hindsight_path.read_text(encoding="utf-8"),
+            assert (
+                "HINDSIGHT_API_LLM_API_KEY=old-private-token"
+                in hindsight_path.read_text(encoding="utf-8")
             )
 
     def test_codex_precise_removal_does_not_clobber_a_later_user_edit(self) -> None:
@@ -154,8 +640,8 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             result = adapter.remove()
 
             current = tomlkit.parse(config.read_text(encoding="utf-8"))
-            self.assertEqual(current["model"], "my-new-choice")
-            self.assertIn(("model",), result.skipped_paths)
+            assert current["model"] == "my-new-choice"
+            assert ("model",) in result.skipped_paths
 
     def test_codex_takeover_records_already_equal_fields_for_precise_removal(
         self,
@@ -173,16 +659,14 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             adopted = adapter.apply(self.configuration, takeover=True)
             manifest = json.loads(adapter.manifest_path.read_text(encoding="utf-8"))
 
-            self.assertTrue(adopted.changed)
-            self.assertFalse(adopted.changes)
-            self.assertTrue(manifest["fields"])
-            self.assertTrue(
-                all(not item["before_present"] for item in manifest["fields"])
-            )
+            assert adopted.changed
+            assert not adopted.changes
+            assert manifest["fields"]
+            assert all(not item["before_present"] for item in manifest["fields"])
             removed = adapter.remove()
-            self.assertTrue(removed.changed)
+            assert removed.changed
             document = tomlkit.parse(config.read_text(encoding="utf-8"))
-            self.assertNotIn("mlxctl-local", document.get("model_providers", {}))
+            assert "mlx-local" not in document.get("model_providers", {})
 
     def test_codex_reconfiguration_keeps_the_original_restore_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -199,14 +683,14 @@ class ClientIntegrationV1Tests(unittest.TestCase):
                 service_name="general",
                 context_window=16384,
                 sampling_profiles={
-                    "general": SamplingProfile(temperature=0.2, top_p=0.9)
+                    "coding": SamplingProfile(temperature=0.2, top_p=0.9)
                 },
             )
 
             adapter.apply(changed)
             adapter.restore()
 
-            self.assertEqual(config.read_text(encoding="utf-8"), original)
+            assert config.read_text(encoding="utf-8") == original
 
     def test_codex_restore_is_exact_and_refuses_to_overwrite_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -220,11 +704,11 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             configured = config.read_text(encoding="utf-8")
 
             adapter.restore()
-            self.assertEqual(config.read_text(encoding="utf-8"), 'model = "before"\n')
+            assert config.read_text(encoding="utf-8") == 'model = "before"\n'
 
             adapter.apply(self.configuration)
             config.write_text(configured + "# user edit\n", encoding="utf-8")
-            with self.assertRaises(ClientIntegrationConflict):
+            with pytest.raises(ClientIntegrationConflict):
                 adapter.restore()
 
     def test_invalid_codex_input_and_replace_failure_leave_current_config_intact(
@@ -239,9 +723,9 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             )
             before = config.read_bytes()
 
-            with self.assertRaises(Exception):
+            with pytest.raises(ParseError):
                 adapter.apply(self.configuration)
-            self.assertEqual(config.read_bytes(), before)
+            assert config.read_bytes() == before
 
             config.write_text('model = "before"\n', encoding="utf-8")
 
@@ -251,11 +735,11 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             failing = CodexClientIntegration(
                 config, root / "owner-2.json", root / "backup-2", replace=fail_replace
             )
-            with self.assertRaisesRegex(OSError, "simulated"):
+            with pytest.raises(OSError, match="simulated"):
                 failing.apply(self.configuration)
-            self.assertEqual(config.read_text(encoding="utf-8"), 'model = "before"\n')
-            self.assertFalse((root / "owner-2.json").exists())
-            self.assertFalse((root / "backup-2").exists())
+            assert config.read_text(encoding="utf-8") == 'model = "before"\n'
+            assert not (root / "owner-2.json").exists()
+            assert not (root / "backup-2").exists()
 
     def test_hindsight_round_trips_comments_profiles_test_and_precise_removal(
         self,
@@ -283,29 +767,42 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             )
 
             text = config.read_text(encoding="utf-8")
-            self.assertTrue(changes)
-            self.assertTrue(applied.changed)
-            self.assertIn("# memory profile", text)
-            self.assertIn("HINDSIGHT_BANK_ID=existing-bank", text)
-            self.assertIn("HINDSIGHT_API_LLM_MODEL=coding", text)
-            self.assertIn("HINDSIGHT_API_LLM_TEMPERATURE_REFLECT=0.9", text)
-            self.assertEqual(
-                calls,
-                [
-                    (
-                        self.configuration.gateway_endpoint,
-                        "coding",
-                        {"temperature": 0.9, "top_p": 0.95},
-                    )
-                ],
+            assert changes
+            assert applied.changed
+            assert "# memory profile" in text
+            assert "HINDSIGHT_BANK_ID=existing-bank" in text
+            assert "HINDSIGHT_API_LLM_MODEL=coding" in text
+            assert (
+                "HINDSIGHT_API_LLM_BASE_URL=http://127.0.0.1:8766/clients/hindsight/profiles/verification/v1"
+                in text
             )
-            self.assertEqual(response, {"text": "ready"})
+            assert "HINDSIGHT_API_LLM_TEMPERATURE_REFLECT=1.0" in text
+            assert (
+                "HINDSIGHT_API_RETAIN_LLM_BASE_URL=http://127.0.0.1:8766/clients/hindsight/profiles/retain/v1"
+                in text
+            )
+            assert (
+                "HINDSIGHT_API_REFLECT_LLM_BASE_URL=http://127.0.0.1:8766/clients/hindsight/profiles/reflect/v1"
+                in text
+            )
+            assert (
+                "HINDSIGHT_API_CONSOLIDATION_LLM_BASE_URL=http://127.0.0.1:8766/clients/hindsight/profiles/consolidation/v1"
+                in text
+            )
+            assert calls == [
+                (
+                    "http://127.0.0.1:8766/clients/hindsight/profiles/reflect/v1",
+                    "coding",
+                    {},
+                )
+            ]
+            assert response == {"text": "ready"}
 
             adapter.remove()
             restored = config.read_text(encoding="utf-8")
-            self.assertIn("HINDSIGHT_BANK_ID=existing-bank", restored)
-            self.assertIn("HINDSIGHT_API_LLM_MODEL=cloud", restored)
-            self.assertNotIn("HINDSIGHT_API_LLM_BASE_URL", restored)
+            assert "HINDSIGHT_BANK_ID=existing-bank" in restored
+            assert "HINDSIGHT_API_LLM_MODEL=cloud" in restored
+            assert "HINDSIGHT_API_LLM_BASE_URL" not in restored
 
     def test_hindsight_takeover_records_already_equal_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -320,16 +817,16 @@ class ClientIntegrationV1Tests(unittest.TestCase):
 
             adopted = adapter.apply(self.configuration, takeover=True)
 
-            self.assertTrue(adopted.changed)
-            self.assertFalse(adopted.changes)
+            assert adopted.changed
+            assert not adopted.changes
             owned = json.loads(adapter.manifest_path.read_text(encoding="utf-8"))[
                 "fields"
             ]
-            self.assertTrue(owned)
-            self.assertTrue(all(not item["before_present"] for item in owned))
+            assert owned
+            assert all(not item["before_present"] for item in owned)
 
     def test_client_endpoint_requires_a_literal_loopback_origin(self) -> None:
-        with self.assertRaisesRegex(ValueError, "literal HTTP loopback"):
+        with pytest.raises(ValueError, match="literal HTTP loopback"):
             ClientConfiguration(
                 gateway_endpoint="http://localhost:8766/v1",
                 service_name="coding",
@@ -355,10 +852,10 @@ class ClientIntegrationV1Tests(unittest.TestCase):
                 None,
             )
 
-            self.assertEqual(adapter.config_path, profiles / "agent-memory.env")
-            self.assertEqual(
-                adapter.manifest_path,
-                ownership / "hindsight-agent-memory.ownership.json",
+            assert adapter.config_path == profiles / "agent-memory.env"
+            assert (
+                adapter.manifest_path
+                == ownership / "hindsight-agent-memory.ownership.json"
             )
 
             stored = ClientSettings(
@@ -377,9 +874,11 @@ class ClientIntegrationV1Tests(unittest.TestCase):
                 {"profile": "reflect"},
                 stored,
             )
-            self.assertEqual(test_adapter.config_path, profiles / "agent-memory.env")
+            assert test_adapter.config_path == profiles / "agent-memory.env"
 
-    def test_local_factory_rejects_missing_traversal_and_symlink_profiles(self) -> None:
+    def test_local_factory_rejects_missing_traversal_and_symlink_profiles(
+        self, subtests: pytest.Subtests
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             profiles = root / "profiles"
@@ -391,8 +890,8 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             )
             for profile in (None, "../default", ".hidden", "name/other"):
                 with (
-                    self.subTest(profile=profile),
-                    self.assertRaisesRegex(ValueError, "profile"),
+                    subtests.test(profile=profile),
+                    pytest.raises(ValueError, match="profile"),
                 ):
                     factory(
                         "client.configure",
@@ -405,14 +904,10 @@ class ClientIntegrationV1Tests(unittest.TestCase):
             target = root / "outside.env"
             target.write_text("SECRET=yes\n", encoding="utf-8")
             (profiles / "agent-memory.env").symlink_to(target)
-            with self.assertRaisesRegex(ValueError, "symlink"):
+            with pytest.raises(ValueError, match="symlink"):
                 factory(
                     "client.configure",
                     "hindsight",
                     {"profile": "agent-memory"},
                     None,
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

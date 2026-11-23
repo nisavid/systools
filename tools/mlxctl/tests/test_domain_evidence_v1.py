@@ -1,4 +1,4 @@
-import unittest
+import pytest
 
 from mlxctl.domain.evidence import (
     CompatibilityAssessment,
@@ -10,8 +10,9 @@ from mlxctl.domain.evidence import (
 from mlxctl.domain.resources import ModelRevision
 
 
-class EvidenceTests(unittest.TestCase):
-    def setUp(self) -> None:
+class TestEvidence:
+    @pytest.fixture(autouse=True)
+    def _setup(self) -> None:
         self.revision = ModelRevision("mlx-community/Qwen", "b" * 40)
 
     def test_assessment_exposes_conflicting_evidence_and_provenance(self) -> None:
@@ -26,8 +27,8 @@ class EvidenceTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(assessment.state, EvidenceState.CONFLICTING)
-        self.assertEqual(assessment.evidence[1].source, "runtime-probe")
+        assert assessment.state == EvidenceState.CONFLICTING
+        assert assessment.evidence[1].source == "runtime-probe"
 
     def test_trust_grant_is_exact_revision_and_runtime_scoped(self) -> None:
         grant = TrustGrant(
@@ -36,21 +37,21 @@ class EvidenceTests(unittest.TestCase):
             accepted_risks=frozenset({"remote_code"}),
         )
 
-        self.assertEqual(
+        assert (
             grant.decide(
                 revision=self.revision,
                 runtime_installation="optiq@0.2.18",
                 requested_risks=frozenset({"remote_code"}),
-            ),
-            TrustDecision.GRANTED,
+            )
+            == TrustDecision.GRANTED
         )
-        self.assertEqual(
+        assert (
             grant.decide(
                 revision=ModelRevision("mlx-community/Qwen", "c" * 40),
                 runtime_installation="optiq@0.2.18",
                 requested_risks=frozenset({"remote_code"}),
-            ),
-            TrustDecision.NOT_GRANTED,
+            )
+            == TrustDecision.NOT_GRANTED
         )
 
     def test_known_security_and_integrity_failures_cannot_be_granted(self) -> None:
@@ -60,23 +61,19 @@ class EvidenceTests(unittest.TestCase):
             accepted_risks=frozenset({"remote_code", "known_security_finding"}),
         )
 
-        self.assertEqual(
+        assert (
             grant.decide(
                 revision=self.revision,
                 runtime_installation="optiq@0.2.18",
                 requested_risks=frozenset({"known_security_finding"}),
-            ),
-            TrustDecision.FORBIDDEN,
+            )
+            == TrustDecision.FORBIDDEN
         )
-        self.assertEqual(
+        assert (
             grant.decide(
                 revision=self.revision,
                 runtime_installation="optiq@0.2.18",
                 requested_risks=frozenset({"integrity_mismatch"}),
-            ),
-            TrustDecision.FORBIDDEN,
+            )
+            == TrustDecision.FORBIDDEN
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

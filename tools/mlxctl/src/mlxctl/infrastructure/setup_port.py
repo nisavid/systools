@@ -13,8 +13,11 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, cast, overload
 from urllib.parse import urlsplit
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 from mlxctl.application.dispatch import ApplicationError
 from mlxctl.application.setup import (
@@ -235,6 +238,8 @@ class SetupOperationPort:
         try:
             facts = self._preflight(offline)
             prior = tuple(self._evidence.load("setup"))
+            capacity = parameters.get("capacity")
+            capacity_name = str(capacity) if capacity is not None else None
             if profile == "expert":
                 missing = _missing_expert_selection(parameters)
                 if missing:
@@ -245,11 +250,18 @@ class SetupOperationPort:
                 selection = _selection(parameters, self._planner.expert_template)
                 explicit_selection = True
             else:
-                baseline = self._planner.plan(facts, evidence=prior)
+                baseline = self._planner.plan(
+                    facts,
+                    SetupRequest(capacity_profile=capacity_name),
+                    evidence=prior,
+                )
+                if capacity_name is None and baseline.capacity_profile is not None:
+                    capacity_name = baseline.capacity_profile.name
                 selection = _selection(parameters, baseline.selection)
                 explicit_selection = _has_selection(parameters)
             request = SetupRequest(
                 selection=selection if explicit_selection else None,
+                capacity_profile=capacity_name,
                 noninteractive=bool(parameters.get("noninteractive", False)),
                 confirmed=parameters.get("confirmed") is True,
             )
@@ -270,6 +282,21 @@ class SetupOperationPort:
         return {
             "state": "review_required",
             "profile": preview.profile_name,
+            "capacity": (
+                {
+                    "profile": preview.capacity_profile,
+                    "context_window": preview.context_window,
+                    "max_concurrent": preview.service_options.get("max_concurrent"),
+                    "projected_kv_bytes": preview.projected_kv_bytes,
+                    "prompt_cache_bytes": preview.service_options.get(
+                        "prompt_cache_bytes"
+                    ),
+                    "description": preview.capacity_description,
+                    "note": "Concurrency is the maximum number of simultaneous inference requests; idle clients use no slot and excess requests queue. With OptiQ 0.3.3, 4-7 requests retain one simultaneous prefill; 8 permits two prefills and is riskier on 48 GiB Macs.",
+                }
+                if preview.capacity_profile is not None
+                else None
+            ),
             "editable": preview.editable,
             "confirmation_required": True,
             "plan_fingerprint": identity,
@@ -370,7 +397,7 @@ class SetupOperationPort:
                 "gateway.configure",
                 {
                     "host": str(endpoint.hostname),
-                    "port": int(endpoint.port or 0),
+                    "port": endpoint.port or 0,
                     "confirmed": True,
                 },
             )
@@ -577,14 +604,14 @@ def _selection(
         model_alias=str(model_alias) if model_alias is not None else None,
         service_route=str(service_route) if service_route is not None else None,
         activation=str(overrides.get("activation", baseline.activation)),
-        pinned=overrides.get("pinned", baseline.pinned),  # type: ignore[arg-type]
+        pinned=cast(bool, overrides.get("pinned", baseline.pinned)),
         service_options=service_options,
         gateway_endpoint=str(
             overrides.get("gateway_endpoint", baseline.gateway_endpoint)
         ),
         clients=clients,
-        client_options=client_options,  # type: ignore[arg-type]
-        sampling_profiles=sampling,  # type: ignore[arg-type]
+        client_options=client_options,
+        sampling_profiles=sampling,
         context_window=_optional_int(
             overrides.get("context_window", baseline.context_window)
         ),
@@ -668,14 +695,15 @@ def _material_result(
 ) -> Mapping[str, object]:
     result = material.get(step_id)
     if not isinstance(result, Mapping):
-        raise RuntimeError(
+        # Missing persisted resume evidence is an operational failure.
+        raise RuntimeError(  # noqa: TRY004
             f"matching {step_id} evidence lacks resumable material; rerun that step"
         )
     return result
 
 
 def _restore_material(evidence: Sequence[SetupEvidence]) -> dict[str, object]:
-    restored = {}
+    restored: dict[str, object] = {}
     for item in evidence:
         if item.state is not StepState.COMPLETE or not item.detail:
             continue
@@ -754,6 +782,14 @@ def _optional_int(value: object) -> int | None:
             "invalid_parameter", "context_window must be a positive integer"
         )
     return value
+
+
+@overload
+def _plain(value: DataclassInstance | Mapping[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _plain(value: object) -> object: ...
 
 
 def _plain(value: object) -> object:

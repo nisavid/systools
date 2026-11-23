@@ -1,9 +1,7 @@
-import unittest
-
+import pytest
 import tomlkit
 
 from mlxctl.application.config_schema import ConfigSchemaError, validate_config
-
 
 VALID = """
 schema_version = 1
@@ -43,35 +41,58 @@ mtp = true
 kind = "codex"
 service = "coding"
 context_window = 32768
-provider = "mlxctl-local"
+provider = "mlx-local"
 
 [clients.codex.sampling.coding]
-temperature = 0.0
+temperature = 0.6
 top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repetition_penalty = 1.0
+enable_thinking = true
+upstream_profile = "precise-coding-thinking"
+source_url = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/README.md#best-practices"
+source_revision = "995ad96eacd98c81ed38be0c5b274b04031597b0"
 """
 
 
-class ConfigSchemaV1Tests(unittest.TestCase):
+class TestConfigSchemaV1:
     def test_loads_distinct_runtime_model_alias_service_gateway_and_client_state(
         self,
     ) -> None:
         config = validate_config(tomlkit.parse(VALID))
 
-        self.assertEqual(config.gateway.port, 8766)
-        self.assertEqual(config.runtimes["optiq@0.2.18"].definition, "optiq")
-        self.assertIn("mtp", config.runtimes["optiq@0.2.18"].capabilities)
-        self.assertEqual(config.models["qwen-exact"].revision.revision[:8], "70a3aa32")
-        self.assertEqual(config.models["qwen-exact"].provenance, "cached")
-        self.assertIsNone(config.models["qwen-exact"].path)
-        self.assertEqual(config.aliases["qwen-optiq"].installation_name, "qwen-exact")
-        self.assertTrue(config.services["coding"].pinned)
-        self.assertEqual(config.services["coding"].route, "coding")
-        self.assertEqual(config.clients["codex"].service, "coding")
-        self.assertEqual(config.clients["codex"].context_window, 32768)
-        self.assertEqual(config.clients["codex"].provider, "mlxctl-local")
-        self.assertEqual(config.clients["codex"].sampling["coding"].top_p, 0.95)
+        assert config.gateway.port == 8766
+        assert config.runtimes["optiq@0.2.18"].definition == "optiq"
+        assert "mtp" in config.runtimes["optiq@0.2.18"].capabilities
+        assert config.models["qwen-exact"].revision.revision[:8] == "70a3aa32"
+        assert config.models["qwen-exact"].provenance == "cached"
+        assert config.models["qwen-exact"].path is None
+        assert config.aliases["qwen-optiq"].installation_name == "qwen-exact"
+        assert config.services["coding"].pinned
+        assert config.services["coding"].route == "coding"
+        assert config.clients["codex"].service == "coding"
+        assert config.clients["codex"].context_window == 32768
+        assert config.clients["codex"].provider == "mlx-local"
+        assert config.clients["codex"].sampling["coding"].top_p == 0.95
+        assert config.clients["codex"].sampling["coding"].top_k == 20
+        assert config.clients["codex"].sampling["coding"].min_p == 0.0
+        assert config.clients["codex"].sampling["coding"].presence_penalty == 0.0
+        assert config.clients["codex"].sampling["coding"].repetition_penalty == 1.0
+        assert config.clients["codex"].sampling["coding"].enable_thinking
+        assert (
+            config.clients["codex"].sampling["coding"].upstream_profile
+            == "precise-coding-thinking"
+        )
+        assert (
+            config.clients["codex"].sampling["coding"].source_revision
+            == "995ad96eacd98c81ed38be0c5b274b04031597b0"
+        )
 
-    def test_rejects_unknown_keys_raw_argv_and_environment_escape_hatches(self) -> None:
+    def test_rejects_unknown_keys_raw_argv_and_environment_escape_hatches(
+        self, subtests: pytest.Subtests
+    ) -> None:
         for insertion in (
             "mystery = true\n",
             'arguments = ["--unsafe"]\n',
@@ -79,13 +100,13 @@ class ConfigSchemaV1Tests(unittest.TestCase):
         ):
             source = VALID.replace("pinned = true\n", f"pinned = true\n{insertion}")
             with (
-                self.subTest(insertion=insertion),
-                self.assertRaises(ConfigSchemaError),
+                subtests.test(insertion=insertion),
+                pytest.raises(ConfigSchemaError),
             ):
                 validate_config(tomlkit.parse(source))
 
     def test_rejects_non_loopback_gateway_and_duplicate_routes(self) -> None:
-        with self.assertRaisesRegex(ConfigSchemaError, "loopback"):
+        with pytest.raises(ConfigSchemaError, match="loopback"):
             validate_config(tomlkit.parse(VALID.replace("127.0.0.1", "0.0.0.0")))
         duplicate = (
             VALID
@@ -96,17 +117,17 @@ runtime = "optiq@0.2.18"
 route = "coding"
 """
         )
-        with self.assertRaisesRegex(ConfigSchemaError, "Gateway route"):
+        with pytest.raises(ConfigSchemaError, match="Gateway route"):
             validate_config(tomlkit.parse(duplicate))
 
     def test_rejects_missing_references_and_mutable_model_revision(self) -> None:
-        with self.assertRaisesRegex(ConfigSchemaError, "immutable commit SHA"):
+        with pytest.raises(ConfigSchemaError, match="immutable commit SHA"):
             validate_config(
                 tomlkit.parse(
                     VALID.replace("70a3aa32c7feef511182bf16aa332f37e8d82014", "main")
                 )
             )
-        with self.assertRaisesRegex(ConfigSchemaError, "unknown Model Alias"):
+        with pytest.raises(ConfigSchemaError, match="unknown Model Alias"):
             validate_config(
                 tomlkit.parse(
                     VALID.replace(
@@ -122,24 +143,52 @@ route = "coding"
             'provenance = "adopted"\npath = "/Volumes/models/qwen"',
         )
         model = validate_config(tomlkit.parse(adopted)).models["qwen-exact"]
-        self.assertEqual(model.provenance, "adopted")
-        self.assertEqual(model.path, "/Volumes/models/qwen")
-        with self.assertRaisesRegex(ConfigSchemaError, "absolute"):
+        assert model.provenance == "adopted"
+        assert model.path == "/Volumes/models/qwen"
+        with pytest.raises(ConfigSchemaError, match="absolute"):
             validate_config(
                 tomlkit.parse(adopted.replace("/Volumes/models/qwen", "qwen"))
             )
 
-    def test_rejects_unsupported_client_kind_and_invalid_sampling(self) -> None:
-        with self.assertRaisesRegex(ConfigSchemaError, "client kind"):
+    def test_rejects_unsupported_client_kind_and_invalid_sampling(
+        self, subtests: pytest.Subtests
+    ) -> None:
+        with pytest.raises(ConfigSchemaError, match="client kind"):
             validate_config(
                 tomlkit.parse(VALID.replace('kind = "codex"', 'kind = "other"'))
             )
-        with self.assertRaisesRegex(ConfigSchemaError, "sampling"):
+        with pytest.raises(ConfigSchemaError, match="sampling"):
             validate_config(
                 tomlkit.parse(
-                    VALID.replace("temperature = 0.0", 'temperature = "cold"')
+                    VALID.replace("temperature = 0.6", 'temperature = "cold"')
                 )
             )
+
+        for original, invalid in (
+            ("top_k = 20", "top_k = -1"),
+            ("min_p = 0.0", "min_p = 1.1"),
+            ("presence_penalty = 0.0", "presence_penalty = 2.1"),
+            ("repetition_penalty = 1.0", "repetition_penalty = 0.0"),
+            ("enable_thinking = true", 'enable_thinking = "yes"'),
+            ("enable_thinking = true", "preserve_thinking = 1"),
+            (
+                'upstream_profile = "precise-coding-thinking"',
+                'upstream_profile = "../bad"',
+            ),
+            (
+                'source_url = "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/995ad96eacd98c81ed38be0c5b274b04031597b0/README.md#best-practices"',
+                'source_url = "http://example.test/model-card"',
+            ),
+            (
+                'source_revision = "995ad96eacd98c81ed38be0c5b274b04031597b0"',
+                'source_revision = "main"',
+            ),
+        ):
+            with (
+                subtests.test(invalid=invalid),
+                pytest.raises(ConfigSchemaError, match="sampling"),
+            ):
+                validate_config(tomlkit.parse(VALID.replace(original, invalid)))
 
     def test_hindsight_profile_and_sampling_are_explicit_desired_state(self) -> None:
         source = (
@@ -153,30 +202,69 @@ route = "coding"
             )
             .replace(
                 "[clients.codex.sampling.coding]",
-                "[clients.hindsight.sampling.retain]",
+                "[clients.hindsight.sampling.verification]",
             )
         )
 
+        profile_body = VALID.split("[clients.codex.sampling.coding]\n", 1)[1]
+        source += "\n[clients.hindsight.sampling.retain]\n" + profile_body
+        source += "\n[clients.hindsight.sampling.reflect]\n" + profile_body
+        source += "\n[clients.hindsight.sampling.consolidation]\n" + profile_body
+
         client = validate_config(tomlkit.parse(source)).clients["hindsight"]
 
-        self.assertEqual(client.profile, "agent-memory")
-        self.assertEqual(client.sampling["retain"].temperature, 0.0)
-        self.assertEqual(client.max_concurrent, 1)
+        assert client.profile == "agent-memory"
+        assert client.sampling["retain"].temperature == 0.6
+        assert client.max_concurrent == 1
 
     def test_rejects_unsafe_hindsight_profile_and_ambiguous_flat_sampling(self) -> None:
         hindsight = VALID.replace("[clients.codex]", "[clients.hindsight]").replace(
             'kind = "codex"',
             'kind = "hindsight"\nprofile = "../default"\nmax_concurrent = 1',
         )
-        with self.assertRaisesRegex(ConfigSchemaError, "profile"):
+        with pytest.raises(ConfigSchemaError, match="profile"):
             validate_config(tomlkit.parse(hindsight))
 
         flat = VALID.replace(
             "[clients.codex.sampling.coding]", "[clients.codex.sampling]"
         )
-        with self.assertRaisesRegex(ConfigSchemaError, "sampling profile"):
+        with pytest.raises(ConfigSchemaError, match="sampling profile"):
             validate_config(tomlkit.parse(flat))
 
+    def test_rejects_partial_workload_sets_and_unrepresentable_codex_values(
+        self, subtests: pytest.Subtests
+    ) -> None:
+        partial_hindsight = VALID.replace(
+            "[clients.codex]", "[clients.hindsight]"
+        ).replace(
+            'kind = "codex"',
+            'kind = "hindsight"\nprofile = "default"\nmax_concurrent = 1',
+        )
+        with pytest.raises(ConfigSchemaError, match="requires sampling profiles"):
+            validate_config(tomlkit.parse(partial_hindsight))
 
-if __name__ == "__main__":
-    unittest.main()
+        for original, invalid in (
+            ("min_p = 0.0", "min_p = 0.1"),
+            ("presence_penalty = 0.0", "presence_penalty = 1.5"),
+            ("repetition_penalty = 1.0", "repetition_penalty = 1.1"),
+            ("top_k = 20", "top_k = 20\nmax_tokens = 100"),
+        ):
+            with (
+                subtests.test(invalid=invalid),
+                pytest.raises(ConfigSchemaError, match="Responses"),
+            ):
+                validate_config(tomlkit.parse(VALID.replace(original, invalid)))
+
+    def test_rejects_non_finite_sampling_values(
+        self, subtests: pytest.Subtests
+    ) -> None:
+        for value in ("nan", "+inf", "-inf"):
+            with (
+                subtests.test(value=value),
+                pytest.raises(ConfigSchemaError, match="finite"),
+            ):
+                validate_config(
+                    tomlkit.parse(
+                        VALID.replace("temperature = 0.6", f"temperature = {value}")
+                    )
+                )

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol
+from typing import Protocol
 
 from .catalogue import Operation, OperationKind
 
@@ -51,6 +52,12 @@ class OperationResult:
             "events",
             tuple(MappingProxyType(dict(event)) for event in self.events),
         )
+
+
+class Dispatcher(Protocol):
+    def preview(self, request: OperationRequest) -> OperationResult: ...
+
+    def execute(self, request: OperationRequest) -> OperationResult: ...
 
 
 @dataclass(slots=True)

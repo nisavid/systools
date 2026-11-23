@@ -8,10 +8,9 @@ import os
 import sqlite3
 import stat
 import threading
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Mapping
-
 
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_VERSION = 1
@@ -164,7 +163,8 @@ class OperationalStateStore:
                 "INSERT INTO events(operation_id, kind, dto_json) VALUES (?, ?, ?)",
                 (operation_id, kind, _encode(dto)),
             )
-            sequence = int(cursor.lastrowid)
+            sequence = cursor.lastrowid
+            assert sequence is not None
         return _record({**dto, "sequence": sequence})
 
     def events(self, operation_id: str | None = None) -> tuple[dict[str, object], ...]:
@@ -264,7 +264,8 @@ class OperationalStateStore:
                 "INSERT INTO metrics(kind, dto_json) VALUES (?, ?)",
                 (kind, _encode(dto)),
             )
-            sequence = int(cursor.lastrowid)
+            sequence = cursor.lastrowid
+            assert sequence is not None
         return _record({**dto, "sequence": sequence})
 
     def metrics(self, kind: str | None = None) -> tuple[dict[str, object], ...]:
@@ -297,7 +298,7 @@ class OperationalStateStore:
             raise
 
     @contextmanager
-    def _connection(self) -> Iterator[sqlite3.Connection]:
+    def _connection(self) -> Generator[sqlite3.Connection, None, None]:
         connection = self._connect()
         try:
             with connection:
@@ -434,5 +435,6 @@ def _encode(dto: Mapping[str, object]) -> str:
 def _decode(payload: str) -> dict[str, object]:
     value = json.loads(payload)
     if not isinstance(value, dict):
-        raise RuntimeError("stored operational DTO is not an object")
+        # Malformed persisted state is an operational failure.
+        raise RuntimeError("stored operational DTO is not an object")  # noqa: TRY004
     return _record(value)

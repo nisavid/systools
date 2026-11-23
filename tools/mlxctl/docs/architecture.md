@@ -98,7 +98,17 @@ creation. An option is never emitted merely because its Runtime Definition
 recognizes the name. OptiQ and the `mlx_lm` installation it delegates to are
 recorded and probed as one compatibility bundle.
 
+Probes are infrastructure observations of a component's liveness, readiness,
+capabilities, or model information. They supply evidence about managed
+resources rather than defining another managed resource.
+
 ## Model management
+
+Model Revision identity is a repository ID and immutable commit SHA. An adopted
+local Model Installation retains that identity and records its absolute path
+and provenance separately; a local path or provenance manifest does not replace
+the revision. Adoption verifies the external snapshot against the exact
+revision's repository security evidence before persisting the installation.
 
 Catalog and model operations use `huggingface_hub` APIs for search,
 exact-revision snapshots, offline lookup, cache inventory, and safe deletion.
@@ -126,6 +136,17 @@ Each Service Run receives a private dynamic Upstream Endpoint. The Gateway
 stays healthy when an upstream fails, reports per-service readiness through
 `/v1/models`, and returns stable actionable errors for stopped or unavailable
 services. Requests never start services implicitly.
+
+Managed clients use workload-profiled Gateway base URLs under
+`/clients/<client>/profiles/<profile>/v1`. The profile resolves from mlxctl's
+validated desired state and must target the request's service route. Before
+forwarding, the Gateway replaces the supported generation and chat-template
+fields with that profile's values. This makes the complete request policy
+explicit even when a client cannot express the model profile natively. Runtime
+acceptance still has to prove that the selected inference-engine path honors
+those values. The ordinary
+`/v1` endpoints remain unmodified OpenAI-compatible routes for unmanaged
+clients.
 
 Request telemetry records admission, completion, active-request counts, and
 service correlation. Lifecycle and pressure telemetry record state transitions.

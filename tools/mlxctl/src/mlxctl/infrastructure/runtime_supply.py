@@ -6,12 +6,13 @@ import json
 import re
 import shutil
 import subprocess
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 from uuid import uuid4
 
 
@@ -119,15 +120,16 @@ class SubprocessRuntimeProbe:
 
     def probe(self, definition: RuntimeDefinition, root: Path) -> RuntimeProbeResult:
         resolved_root = root.expanduser().resolve(strict=True)
-        python = (resolved_root / "bin/python").resolve(strict=True)
-        python.relative_to(resolved_root)
+        python = resolved_root / "bin/python"
         if not python.is_file():
             raise RuntimeSupplyError("runtime Python launcher is unavailable")
         version_command = (
             str(python),
             "-c",
-            "import importlib.metadata; "
-            f"print(importlib.metadata.version({definition.package!r}))",
+            (
+                "import importlib.metadata; "
+                f"print(importlib.metadata.version({definition.package!r}))"
+            ),
         )
         version_result = self._execute(version_command)
         if getattr(version_result, "returncode", 1) != 0:
@@ -290,6 +292,10 @@ class RuntimeLaunchBuilder:
         }
         argv = list(installation.launcher)
         for name, value in requested.items():
+            if name in {"max_context", "max_concurrent", "prompt_cache_bytes"} and (
+                type(value) is not int or value <= 0
+            ):
+                raise ValueError(f"{name} must be a positive integer")
             if name not in definition.options:
                 raise UnsupportedLaunchOption(
                     f"runtime '{installation.runtime}' does not define launch option "

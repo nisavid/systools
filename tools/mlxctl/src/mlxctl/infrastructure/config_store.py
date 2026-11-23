@@ -8,15 +8,15 @@ import json
 import os
 import stat
 import tempfile
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Generic, Iterator, Mapping, Sequence, TypeVar
+from typing import Generic, TypeVar
 
 import tomlkit
 from tomlkit.toml_document import TOMLDocument
-
 
 ValidatedConfig = TypeVar("ValidatedConfig")
 ConfigValidator = Callable[[Mapping[str, object]], ValidatedConfig]
@@ -141,7 +141,7 @@ class ConfigStore(Generic[ValidatedConfig]):
         _private_file_exists(self._journal_path)
 
     @contextmanager
-    def _locked(self) -> Iterator[None]:
+    def _locked(self) -> Generator[None, None, None]:
         lock_path = self._path.with_suffix(f"{self._path.suffix}.lock")
         descriptor = _open_private_file(lock_path, os.O_RDWR | os.O_CREAT)
         try:
@@ -267,7 +267,8 @@ class ConfigStore(Generic[ValidatedConfig]):
             try:
                 raw = json.loads(line) if complete else None
                 if not isinstance(raw, dict):
-                    raise ValueError("journal entry must be an object")
+                    # A decoded journal value can violate the record schema.
+                    raise ValueError("journal entry must be an object")  # noqa: TRY004
                 records.append(ConfigRevision(**raw))
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 if index != len(lines) - 1 or complete:

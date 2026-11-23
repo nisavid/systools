@@ -9,9 +9,10 @@ import stat
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -22,6 +23,8 @@ from mlxctl.domain.admission import PressureLevel
 from mlxctl.domain.resources import InferenceService
 from mlxctl.infrastructure.model_supply import (
     ModelInstallation as SuppliedModelInstallation,
+)
+from mlxctl.infrastructure.model_supply import (
     VerificationResult,
 )
 from mlxctl.infrastructure.runtime_supply import (
@@ -30,12 +33,13 @@ from mlxctl.infrastructure.runtime_supply import (
 from mlxctl.infrastructure.runtime_supply import RuntimeLaunchBuilder
 from mlxctl.infrastructure.supervisor_v1 import (
     CapabilityValidationError,
+    ManagedProcess,
     PreparedLaunch,
     ProcessIdentity,
 )
 
-
 _SAFE_LOG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_CONTENT_ADDRESSED_BLOB_NAME = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
 _ALLOWED_PROCESS_ENVIRONMENT = frozenset(
     {
         "HF_HOME",
@@ -245,7 +249,7 @@ class MacOSProcessProbe:
         self._process_factory = process_factory
         self._transport = transport
 
-    def identity(self, process: SubprocessManagedProcess) -> ProcessIdentity:
+    def identity(self, process: ManagedProcess) -> ProcessIdentity:
         observed = self._process_factory(process.pid)
         return ProcessIdentity(process.pid, _birth_token(observed.create_time()))
 
@@ -584,16 +588,32 @@ class ExactRuntimeLaunchSupply:
         if not candidate.is_absolute():
             candidate = snapshot / candidate
         try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(snapshot)
+            selected = Path(os.path.abspath(candidate))
+            selected.relative_to(snapshot)
+            resolved = selected.resolve(strict=True)
         except (FileNotFoundError, ValueError) as error:
             raise CapabilityValidationError(
-                "kv_config must resolve inside the exact cached model snapshot"
+                "kv_config must select an artifact from the exact cached model snapshot"
             ) from error
+        if not _is_snapshot_artifact(snapshot, resolved):
+            raise CapabilityValidationError(
+                "kv_config must select an artifact from the exact cached model snapshot"
+            )
         if not resolved.is_file():
             raise CapabilityValidationError("kv_config is not a file")
         options["kv_config"] = str(resolved)
         return options
+
+
+def _is_snapshot_artifact(snapshot: Path, resolved: Path) -> bool:
+    if resolved.is_relative_to(snapshot):
+        return True
+    repository_cache = snapshot.parent.parent
+    return (
+        snapshot.parent.name == "snapshots"
+        and resolved.parent == repository_cache / "blobs"
+        and _CONTENT_ADDRESSED_BLOB_NAME.fullmatch(resolved.name) is not None
+    )
 
 
 def _validate_argv(argv: Sequence[str]) -> tuple[str, ...]:

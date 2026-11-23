@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import sys
-import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from mlxctl.application.config_schema import MlxctlConfig, validate_config
-from mlxctl.application.dispatch import ApplicationError, OperationRequest
+from mlxctl.application.config_schema import (
+    ClientSamplingSettings,
+    MlxctlConfig,
+    validate_config,
+)
+from mlxctl.application.dispatch import (
+    ApplicationError,
+    Dispatcher,
+    OperationRequest,
+    OperationResult,
+)
 from mlxctl.application.setup import (
+    CapacityProfile,
     ExactSetupSelection,
     RecommendedProfile,
     SetupPlanner,
@@ -23,15 +32,21 @@ from mlxctl.infrastructure.composition import (
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.control_client import UnixControlClient
 from mlxctl.infrastructure.daemon_service import DaemonOperationRouter, DaemonService
-from mlxctl.infrastructure.gateway_runtime import GatewayRuntime
+from mlxctl.infrastructure.gateway import GatewayRequestProfile
 from mlxctl.infrastructure.gateway_credential import GatewayCredential
-from mlxctl.infrastructure.host_integration import LaunchdSupervisorActivator
+from mlxctl.infrastructure.gateway_runtime import GatewayRuntime
+from mlxctl.infrastructure.host_integration import (
+    LaunchdSupervisorActivator,
+    private_socket_ready,
+)
 from mlxctl.infrastructure.launchd import LaunchdAdapter
 from mlxctl.infrastructure.model_intelligence import (
     HuggingFaceModelRepository,
     ModelIntelligence,
     PsutilMachineInventory,
+    optiq_kv_bytes,
 )
+from mlxctl.infrastructure.model_profiles import ModelProfileCatalogue
 from mlxctl.infrastructure.model_supply import (
     HuggingFaceHubClient,
     ModelInstallation,
@@ -50,9 +65,11 @@ from mlxctl.infrastructure.production_host import (
     SystemSetupPreflight,
     client_port,
     configured_model_installations,
+    default_sampling,
     plain,
     removal_inventory,
     resolve_uv,
+    sampling_profile,
 )
 from mlxctl.infrastructure.runtime_supply import (
     RuntimeCatalogue,
@@ -66,6 +83,7 @@ from mlxctl.infrastructure.setup_port import (
     SetupOperationPort,
 )
 from mlxctl.infrastructure.state_store import OperationalStateStore
+from mlxctl.infrastructure.supervisor_v1 import Supervisor
 from mlxctl.infrastructure.supply_ports import (
     ExactRevisionModelSecurity,
     ModelSupplyPort,
@@ -73,7 +91,6 @@ from mlxctl.infrastructure.supply_ports import (
     inspect_adopted_snapshot,
     verify_adopted_snapshot,
 )
-from mlxctl.infrastructure.supervisor_v1 import Supervisor
 from mlxctl.infrastructure.system_adapters import (
     ConfigDesiredState,
     ExactRuntimeLaunchSupply,
@@ -82,7 +99,6 @@ from mlxctl.infrastructure.system_adapters import (
     MacOSProcessProbe,
     SystemClock,
 )
-
 
 LAUNCHD_LABEL = "io.nisavid.mlxd"
 _DEFAULT_MODEL = "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
@@ -187,6 +203,99 @@ class _ActivatingOperationOwner:
         return self._remote.execute(operation, parameters)
 
 
+class _LocalSupervisorOwner:
+    """Forward lifecycle work without starting a Supervisor just to stop it."""
+
+    def __init__(
+        self,
+        remote: OperationOwner,
+        launchd: LaunchdAdapter,
+        control_socket: Path,
+        state_store: OperationalStateStore,
+        config_store: ConfigStore[MlxctlConfig],
+        *,
+        clock: Callable[[], int] | None = None,
+    ) -> None:
+        self._remote = remote
+        self._launchd = launchd
+        self._control_socket = control_socket
+        self._state_store = state_store
+        self._config_store = config_store
+        self._clock = clock or SystemClock().time_ns
+
+    def execute(
+        self, operation: str, parameters: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        if operation == "supervisor.stop":
+            if self._launchd.status().running or private_socket_ready(
+                self._control_socket
+            ):
+                return self._remote.execute(operation, parameters)
+            self._reconcile_stopped()
+            return {"state": "stopped", "already_stopped": True}
+        return self._remote.execute(operation, parameters)
+
+    def _reconcile_stopped(self) -> None:
+        config = (
+            self._config_store.load().value
+            if self._config_store.exists
+            else validate_config({"schema_version": 1})
+        )
+        self._state_store.put_snapshot(
+            {
+                "kind": "supervisor",
+                "id": "supervisor",
+                "version": self._clock(),
+                "state": "stopped",
+                "pressure": "unknown",
+            }
+        )
+        self._state_store.put_snapshot(
+            {
+                "kind": "gateway",
+                "id": "gateway",
+                "version": self._clock(),
+                "state": "stopped",
+                "host": config.gateway.host,
+                "port": config.gateway.port,
+            }
+        )
+        latest_runs: dict[str, Mapping[str, object]] = {}
+        for run in self._state_store.snapshots("service_run"):
+            service = str(run.get("service", run.get("service_name", "")))
+            if service:
+                latest_runs[service] = run
+        for service, run in latest_runs.items():
+            self._state_store.put_snapshot(
+                {
+                    "kind": "service_run",
+                    "id": str(run["id"]),
+                    "version": self._clock(),
+                    "service": service,
+                    "run_id": str(run.get("run_id", "unknown")),
+                    "state": "stopped",
+                }
+            )
+        for operation in self._state_store.operations():
+            if operation.get("status") not in {"queued", "running", "resuming"}:
+                continue
+            interrupted = {
+                **operation,
+                "status": "failed",
+                "outcome": "interrupted",
+                "error": "Supervisor stopped before the operation completed.",
+            }
+            self._state_store.put_operation(interrupted)
+            self._state_store.append_event(
+                {
+                    "kind": "interrupted",
+                    "operation_id": str(operation["id"]),
+                    "resource": str(operation.get("resource", "unknown")),
+                    "reason": "supervisor_inactive",
+                }
+            )
+
+
 class _DispatcherOwner:
     def __init__(
         self,
@@ -217,7 +326,7 @@ class _GatewayMutationGuard:
 
     def __init__(
         self,
-        dispatcher,
+        dispatcher: Dispatcher,
         launchd: LaunchdAdapter,
         control_socket: Path | None = None,
     ) -> None:
@@ -225,21 +334,18 @@ class _GatewayMutationGuard:
         self._launchd = launchd
         self._control_socket = control_socket
 
-    def preview(self, request: OperationRequest):
+    def preview(self, request: OperationRequest) -> OperationResult:
         self._check(request)
         return self._dispatcher.preview(request)
 
-    def execute(self, request: OperationRequest):
+    def execute(self, request: OperationRequest) -> OperationResult:
         self._check(request)
         return self._dispatcher.execute(request)
 
     def _check(self, request: OperationRequest) -> None:
-        socket_running = False
-        if self._control_socket is not None:
-            try:
-                socket_running = stat.S_ISSOCK(self._control_socket.lstat().st_mode)
-            except FileNotFoundError:
-                pass
+        socket_running = self._control_socket is not None and private_socket_ready(
+            self._control_socket
+        )
         if request.name == "gateway.configure" and (
             self._launchd.status().running or socket_running
         ):
@@ -276,7 +382,15 @@ class _SetupSupervisorOwner:
         if operation in {"service.drain", "service.stop"}:
             if not self._launchd.status().running:
                 return {"state": "stopped", "already_stopped": True}
-        elif operation in {"supervisor.start", "service.start"}:
+        elif operation == "supervisor.start":
+            # Setup can be the first command run after replacing the installed
+            # mlxctl package.  A running launchd process still has the old
+            # Python code loaded, so recycle it before asking the freshly
+            # started daemon to reconcile its configured services.
+            if self._launchd.status().running:
+                self._launchd.bootout()
+            self._activator.activate()
+        elif operation == "service.start":
             self._activator.activate()
         return self._remote.execute(operation, parameters)
 
@@ -299,7 +413,7 @@ def compose_local(
     paths = paths or resolve_paths(home=resolved_home)
     paths.prepare()
     credential = GatewayCredential(paths.gateway_credential)
-    executable = (executable or Path(sys.executable)).expanduser().resolve()
+    executable = (executable or Path(sys.executable)).expanduser().absolute()
     launchd = make_launchd(
         executable=executable,
         home=resolved_home,
@@ -352,7 +466,9 @@ def compose_local(
         activator=activator,
         runtime_supply=remote,
         model_supply=model,
-        supervisor=remote,
+        supervisor=_LocalSupervisorOwner(
+            remote, launchd, paths.control_socket, state_store, config_store
+        ),
         setup=setup,
         clients=client,
         config_store=config_store,
@@ -372,7 +488,7 @@ def compose_local(
         application.dispatcher, launchd, paths.control_socket
     )
     public_application = ApplicationComposition(
-        dispatcher=guarded,  # type: ignore[arg-type]
+        dispatcher=guarded,
         catalogue=application.catalogue,
         config_store=application.config_store,
         state_store=application.state_store,
@@ -380,6 +496,40 @@ def compose_local(
         paths=application.paths,
     )
     return ProductionApplication(public_application, launchd)
+
+
+def _sampling_matches_service_model(
+    config: MlxctlConfig,
+    service,
+    sampling: ClientSamplingSettings,
+    catalogue: ModelProfileCatalogue | None = None,
+) -> bool:
+    """Fail closed unless stored provenance matches the service's exact model."""
+
+    alias = config.aliases.get(service.model_alias)
+    if alias is None:
+        return False
+    installation = config.models.get(alias.installation_name)
+    if installation is None:
+        return False
+    if sampling.upstream_profile is None:
+        return True
+    profiles = catalogue or ModelProfileCatalogue.load_builtin()
+    try:
+        expected = profiles.profile(
+            installation.revision.repository,
+            installation.revision.revision,
+            sampling.upstream_profile,
+        )
+    except KeyError:
+        return False
+    actual = dict(sampling_profile(sampling).values())
+    actual.pop("preserve_thinking", None)
+    return (
+        actual == dict(expected.parameters)
+        and sampling.source_url == expected.source_url
+        and sampling.source_revision == expected.source_revision
+    )
 
 
 def compose_daemon(
@@ -447,11 +597,41 @@ def compose_daemon(
         return configured_model_installations(load_config(), hub_supply.inventory())
 
     configured = load_config()
+    model_profiles = ModelProfileCatalogue.load_builtin()
+
+    def request_profile(client_name: str, profile_name: str):
+        config = load_config()
+        client = config.clients.get(client_name)
+        if client is None:
+            return None
+        sampling = client.sampling.get(profile_name)
+        if sampling is None:
+            return None
+        service = config.services.get(client.service)
+        if service is None:
+            service = next(
+                (
+                    item
+                    for item in config.services.values()
+                    if str(item.route) == client.service
+                ),
+                None,
+            )
+        if service is None:
+            return None
+        if not _sampling_matches_service_model(
+            config, service, sampling, model_profiles
+        ):
+            return None
+        parameters = dict(sampling_profile(sampling).values())
+        return GatewayRequestProfile(str(service.route), parameters)
+
     gateway = GatewayRuntime(
         host=configured.gateway.host,
         port=configured.gateway.port,
         metric_sink=state_store.record_metric,
         authenticate=credential.authenticate,
+        profile_resolver=request_profile,
     )
     pressure = MacOSMemoryPressure()
     supervisor = Supervisor(
@@ -518,13 +698,77 @@ def _setup_planner() -> SetupPlanner:
         activation="manual",
         service_options={
             "kv_config": "kv_config.json",
-            "max_context": 32768,
             "mtp": True,
-            "temp": 0.0,
         },
         gateway_endpoint="http://127.0.0.1:8766/v1",
-        clients=(),
-        context_window=32768,
+        clients=("codex", "hindsight"),
+        client_options={
+            "codex": {
+                "sampling_profiles": {
+                    name: dict(sampling_profile(settings).definition())
+                    for name, settings in default_sampling(
+                        _DEFAULT_MODEL, _DEFAULT_MODEL_REVISION, "codex"
+                    ).items()
+                },
+            },
+            "hindsight": {
+                "profile": "default",
+                "max_concurrent": 1,
+                "sampling_profiles": {
+                    name: dict(sampling_profile(settings).definition())
+                    for name, settings in default_sampling(
+                        _DEFAULT_MODEL, _DEFAULT_MODEL_REVISION, "hindsight"
+                    ).items()
+                },
+            },
+        },
+    )
+    pinned_config = {"head_dim": 256, "num_key_value_heads": 2}
+    pinned_kv_config = [
+        {"layer_idx": index, "bits": bits, "group_size": 64}
+        for index, bits in zip(
+            (3, 7, 11, 15, 19, 23, 27, 31, 35, 39),
+            (4, 8, 4, 8, 8, 4, 4, 4, 4, 4),
+            strict=True,
+        )
+    ]
+    projected_kv_bytes = optiq_kv_bytes(
+        pinned_config,
+        pinned_kv_config,
+        context_tokens=131_072,
+        concurrency=6,
+    )
+    if projected_kv_bytes is None:
+        raise RuntimeError("pinned OptiQ KV geometry is invalid")
+    prompt_cache_bytes = 2 * 1024**3
+    capacities = (
+        CapacityProfile(
+            "balanced",
+            "Balanced",
+            131_072,
+            6,
+            projected_kv_bytes,
+            prompt_cache_bytes,
+            "Best default for several active tools while retaining a 128K context window.",
+        ),
+        CapacityProfile(
+            "long-context",
+            "Long context",
+            196_608,
+            4,
+            projected_kv_bytes,
+            prompt_cache_bytes,
+            "More context per request with four simultaneous inference requests.",
+        ),
+        CapacityProfile(
+            "native-context",
+            "Native context",
+            262_144,
+            3,
+            projected_kv_bytes,
+            prompt_cache_bytes,
+            "The model's native context with three simultaneous inference requests.",
+        ),
     )
     return SetupPlanner(
         (
@@ -534,5 +778,7 @@ def _setup_planner() -> SetupPlanner:
                 selection,
                 minimum_disk_bytes=24 * 1024**3,
             ),
-        )
+        ),
+        capacity_profiles=capacities,
+        default_capacity_profile="balanced",
     )

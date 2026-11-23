@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Mapping
-
+from typing import Self
 
 _RESOURCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _INSTALLATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]*\Z")
@@ -17,7 +17,7 @@ _IMMUTABLE_REVISION = re.compile(r"[0-9a-fA-F]{40,64}\Z")
 class ResourceName(str):
     """A stable user-facing resource identity safe for paths and routing."""
 
-    def __new__(cls, value: str) -> ResourceName:
+    def __new__(cls, value: str) -> Self:
         if not isinstance(value, str) or _RESOURCE_NAME.fullmatch(value) is None:
             raise ValueError("resource name must match [A-Za-z0-9][A-Za-z0-9._-]*")
         return str.__new__(cls, value)

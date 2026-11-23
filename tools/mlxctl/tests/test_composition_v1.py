@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import tempfile
-import unittest
 from pathlib import Path
 
 from mlxctl.application.dispatch import OperationRequest
@@ -35,7 +34,7 @@ class _ModelSupply(_Port):
         return CacheInventory((), "local-observed", ())
 
 
-class CompositionTests(unittest.TestCase):
+class TestComposition:
     def test_uninitialized_queries_compose_without_supervisor_activation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -59,13 +58,15 @@ class CompositionTests(unittest.TestCase):
                 OperationRequest("runtime.available")
             )
 
-            self.assertEqual(status.value["services"], [])
-            self.assertEqual(
-                [item["key"] for item in available.value["items"]],
-                ["mlx_lm", "mlx_vlm", "optiq"],
-            )
-            self.assertEqual(activator.calls, 0)
-            self.assertEqual(port.calls, [])
+            assert status.value["services"] == []
+            assert isinstance(available.value["items"], (list, tuple))
+            assert [item["key"] for item in available.value["items"]] == [
+                "mlx_lm",
+                "mlx_vlm",
+                "optiq",
+            ]
+            assert activator.calls == 0
+            assert port.calls == []
 
     def test_mutation_uses_the_injected_owner_and_explicit_activation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -99,10 +100,6 @@ class CompositionTests(unittest.TestCase):
                 )
             )
 
-            self.assertEqual(activator.calls, 1)
-            self.assertEqual(runtime.calls[0][0], "runtime.install")
-            self.assertEqual(result.value["state"], "accepted")
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert activator.calls == 1
+            assert runtime.calls[0][0] == "runtime.install"
+            assert result.value["state"] == "accepted"

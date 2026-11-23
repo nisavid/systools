@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import ipaddress
 import json
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -27,6 +27,10 @@ _RESPONSE_HEADER_ALLOWLIST = frozenset(
 )
 DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
 DEFAULT_UPSTREAM_RESPONSE_TIMEOUT = 30.0
+_SSE_INSPECTION_LIMIT = 1024 * 1024
+_TERMINAL_RESPONSE_EVENTS = frozenset(
+    {"response.completed", "response.failed", "response.incomplete"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +42,14 @@ class GatewayRoute:
     endpoint: str | None = None
     model: str | None = None
     runtime: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayRequestProfile:
+    """A client workload profile enforced before an upstream request."""
+
+    service: str
+    parameters: Mapping[str, object]
 
 
 class GatewayRouteResolver(Protocol):
@@ -68,16 +80,85 @@ class _UpstreamStreamingResponse(StreamingResponse):
     ) -> None:
         self._upstream = upstream
         self._on_close = on_close
-        super().__init__(upstream.aiter_raw(), **kwargs)
+        content_type = upstream.headers.get("content-type", "").partition(";")[0]
+        content_encoding = upstream.headers.get("content-encoding", "identity")
+        body = (
+            _iter_sse_until_terminal(upstream)
+            if content_type.strip().lower() == "text/event-stream"
+            and content_encoding.strip().lower() in {"", "identity"}
+            else upstream.aiter_raw()
+        )
+        super().__init__(body, **kwargs)
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await self._upstream.aclose()
-            if self._on_close is not None:
-                self._on_close()
-                self._on_close = None
+            try:
+                await self._upstream.aclose()
+            finally:
+                if self._on_close is not None:
+                    self._on_close()
+                    self._on_close = None
+
+
+async def _iter_sse_until_terminal(
+    upstream: httpx.Response,
+) -> AsyncIterator[bytes]:
+    """Stop an SSE transport after its protocol-level terminal event."""
+
+    pending = bytearray()
+    async for chunk in upstream.aiter_raw():
+        yield chunk
+        pending.extend(chunk)
+        while True:
+            event = _pop_sse_event(pending)
+            if event is None:
+                break
+            if _is_terminal_sse_event(event):
+                return
+        if len(pending) > _SSE_INSPECTION_LIMIT:
+            del pending[:-_SSE_INSPECTION_LIMIT]
+
+
+def _pop_sse_event(pending: bytearray) -> bytes | None:
+    boundaries = tuple(
+        (index, separator)
+        for separator in (b"\r\n\r\n", b"\n\n", b"\r\r")
+        if (index := pending.find(separator)) >= 0
+    )
+    if not boundaries:
+        return None
+    index, separator = min(boundaries, key=lambda item: item[0])
+    event = bytes(pending[:index])
+    del pending[: index + len(separator)]
+    return event
+
+
+def _is_terminal_sse_event(event: bytes) -> bool:
+    event_name = ""
+    data_lines: list[bytes] = []
+    for line in event.splitlines():
+        field, separator, value = line.partition(b":")
+        if not separator:
+            continue
+        value = value.lstrip(b" ")
+        if field == b"event":
+            event_name = value.decode("utf-8", errors="replace")
+        elif field == b"data":
+            data_lines.append(value)
+    if event_name in _TERMINAL_RESPONSE_EVENTS:
+        return True
+    data = b"\n".join(data_lines).strip()
+    if data == b"[DONE]":
+        return True
+    try:
+        payload = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict) and payload.get("type") in _TERMINAL_RESPONSE_EVENTS
+    )
 
 
 def validate_loopback_bind(host: str) -> str:
@@ -103,6 +184,8 @@ def create_gateway(
     upstream_response_timeout: float = DEFAULT_UPSTREAM_RESPONSE_TIMEOUT,
     activity: GatewayActivity | None = None,
     authenticate: Callable[[str | None], bool] | None = None,
+    profile_resolver: Callable[[str, str], GatewayRequestProfile | None | Any]
+    | None = None,
 ) -> Starlette:
     """Build the ASGI Gateway using injected route and HTTP client boundaries."""
 
@@ -122,7 +205,7 @@ def create_gateway(
     )
 
     @asynccontextmanager
-    async def lifespan(app: Starlette) -> AsyncIterator[Mapping[str, Any]]:
+    async def lifespan(app: Starlette) -> AsyncGenerator[Mapping[str, Any], None]:
         async with make_client() as client:
             yield {"http_client": client}
 
@@ -226,6 +309,38 @@ def create_gateway(
                 parameter="model",
                 retryable=True,
             )
+        client_name = request.path_params.get("client")
+        profile_name = request.path_params.get("profile")
+        if client_name is not None and profile_name is not None:
+            profile = (
+                None
+                if profile_resolver is None
+                else await _await_if_needed(
+                    profile_resolver(str(client_name), str(profile_name))
+                )
+            )
+            if profile is None:
+                return _error_response(
+                    404,
+                    "profile_not_found",
+                    f"Client generation profile {client_name}/{profile_name} is not configured.",
+                    action="Reconfigure the client with mlxctl and retry.",
+                    parameter="profile",
+                )
+            if profile.service != service:
+                return _error_response(
+                    400,
+                    "profile_service_mismatch",
+                    f"Client generation profile {client_name}/{profile_name} targets {profile.service!r}, not {service!r}.",
+                    action=f"Set model to {profile.service!r} and retry.",
+                    parameter="model",
+                )
+            payload = _apply_request_profile(
+                payload,
+                profile.parameters,
+                responses=request.url.path.endswith("/responses"),
+            )
+            body = json.dumps(payload, separators=(",", ":")).encode()
         try:
             origin = _validated_upstream_origin(route.endpoint)
         except ValueError:
@@ -251,7 +366,7 @@ def create_gateway(
         client = request.state.http_client
         upstream_request = client.build_request(
             request.method,
-            f"{origin}{request.url.path}",
+            f"{origin}{_upstream_path(request.url.path)}",
             content=body,
             headers={
                 name: value
@@ -297,9 +412,68 @@ def create_gateway(
             Route("/v1/models", models, methods=["GET"]),
             Route("/v1/chat/completions", proxy, methods=["POST"]),
             Route("/v1/responses", proxy, methods=["POST"]),
+            Route(
+                "/clients/{client}/profiles/{profile}/v1/models",
+                models,
+                methods=["GET"],
+            ),
+            Route(
+                "/clients/{client}/profiles/{profile}/v1/chat/completions",
+                proxy,
+                methods=["POST"],
+            ),
+            Route(
+                "/clients/{client}/profiles/{profile}/v1/responses",
+                proxy,
+                methods=["POST"],
+            ),
         ],
         lifespan=lifespan,
     )
+
+
+def _upstream_path(path: str) -> str:
+    marker = "/v1/"
+    _prefix, separator, suffix = path.rpartition(marker)
+    if not separator:
+        raise ValueError("Gateway route lacks an OpenAI-compatible path")
+    return marker + suffix
+
+
+def _apply_request_profile(
+    payload: Mapping[str, object],
+    parameters: Mapping[str, object],
+    *,
+    responses: bool,
+) -> dict[str, object]:
+    result = dict(payload)
+    supported = (
+        {"temperature", "top_p", "top_k"}
+        if responses
+        else {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "presence_penalty",
+            "repetition_penalty",
+            "max_tokens",
+        }
+    )
+    for key in supported:
+        if key in parameters:
+            result[key] = parameters[key]
+    template_parameters = {
+        key: parameters[key]
+        for key in ("enable_thinking", "preserve_thinking")
+        if key in parameters
+    }
+    if template_parameters:
+        raw_kwargs = result.get("chat_template_kwargs", {})
+        kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, Mapping) else {}
+        kwargs.update(template_parameters)
+        result["chat_template_kwargs"] = kwargs
+    return result
 
 
 class RequestTooLarge(ValueError):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, overload
 
 from mlxctl.application.config_schema import (
     ClientSamplingSettings,
@@ -13,29 +13,51 @@ from mlxctl.application.config_schema import (
     validate_hindsight_profile_name,
 )
 from mlxctl.application.dispatch import ApplicationError
-from mlxctl.infrastructure.control_client import ControlClientError, UnixControlClient
 from mlxctl.infrastructure.client_integrations import (
+    ClientApplyResult,
     ClientConfiguration,
+    ClientRemovalResult,
+    SemanticChange,
+    TestRequest,
+    TestResult,
+)
+from mlxctl.infrastructure.control_client import (
+    ControlClientError,
+    ControlResponse,
+    UnixControlClient,
 )
 from mlxctl.infrastructure.supervisor_v1 import Supervisor
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 
 class ControlClient(Protocol):
     def execute(
         self, operation: str, parameters: Mapping[str, object] | None = None
-    ): ...
+    ) -> ControlResponse: ...
 
-    def cancel(self, operation_id: str): ...
+    def cancel(self, operation_id: str) -> ControlResponse: ...
 
 
 class ClientAdapter(Protocol):
-    def preview(self, configuration: ClientConfiguration): ...
+    def preview(
+        self, configuration: ClientConfiguration
+    ) -> tuple[SemanticChange, ...]: ...
 
-    def apply(self, configuration: ClientConfiguration, *, takeover: bool = False): ...
+    def apply(
+        self, configuration: ClientConfiguration, *, takeover: bool = False
+    ) -> ClientApplyResult: ...
 
-    def remove(self): ...
+    def remove(self) -> ClientRemovalResult: ...
 
-    def test(self, configuration: ClientConfiguration, request, *, profile: str): ...
+    def test(
+        self,
+        configuration: ClientConfiguration,
+        request: TestRequest[TestResult],
+        *,
+        profile: str,
+    ) -> TestResult: ...
 
 
 class RemoteOperationPort:
@@ -86,9 +108,7 @@ class SupervisorOperationPort:
             value = self._supervisor.start()
         elif operation == "supervisor.stop":
             value = self._supervisor.stop()
-        elif operation == "supervisor.restart":
-            value = self._supervisor.restart()
-        elif operation == "gateway.restart":
+        elif operation == "supervisor.restart" or operation == "gateway.restart":
             value = self._supervisor.restart()
         elif operation == "service.start":
             value = self._supervisor.start_service(resource)
@@ -170,8 +190,26 @@ class ClientOperationPort:
                 return {**plain_result, "desired_state_retained": True}
             self._record(name, None)
             return plain_result
+        if operation == "client.inspect":
+            inspect: Callable[[], Mapping[str, object]] | None = getattr(
+                adapter, "inspect", None
+            )
+            if inspect is None:
+                return {"state": "healthy", "next_actions": []}
+            return _plain(inspect())
         configuration = self._configuration(name, parameters, stored)
         if operation == "client.configure":
+            required_profiles = (
+                {"coding"}
+                if name == "codex"
+                else {"verification", "retain", "reflect", "consolidation"}
+            )
+            if set(configuration.sampling_profiles) != required_profiles:
+                raise ApplicationError(
+                    "invalid_parameter",
+                    f"{name} requires sampling profiles: {', '.join(sorted(required_profiles))}",
+                    next_actions=(f"mlxctl client configure {name} --help",),
+                )
             preview = adapter.preview(configuration)
             result = adapter.apply(
                 configuration, takeover=bool(parameters.get("takeover", False))
@@ -210,7 +248,11 @@ def _client_settings(
     configuration: ClientConfiguration,
     stored: ClientSettings | None,
 ) -> ClientSettings:
-    service = str(parameters.get("service") or (stored.service if stored else ""))
+    service = str(
+        configuration.service_identity
+        or parameters.get("service")
+        or (stored.service if stored else "")
+    )
     if not service:
         raise ApplicationError(
             "invalid_parameter",
@@ -228,7 +270,16 @@ def _client_settings(
         profile_name: ClientSamplingSettings(
             temperature=profile_settings.temperature,
             top_p=profile_settings.top_p,
+            top_k=profile_settings.top_k,
+            min_p=profile_settings.min_p,
+            presence_penalty=profile_settings.presence_penalty,
+            repetition_penalty=profile_settings.repetition_penalty,
             max_tokens=profile_settings.max_tokens,
+            enable_thinking=profile_settings.enable_thinking,
+            preserve_thinking=profile_settings.preserve_thinking,
+            upstream_profile=profile_settings.upstream_profile,
+            source_url=profile_settings.source_url,
+            source_revision=profile_settings.source_revision,
         )
         for profile_name, profile_settings in configuration.sampling_profiles.items()
     }
@@ -244,6 +295,14 @@ def _client_settings(
     )
 
 
+@overload
+def _plain(value: DataclassInstance | Mapping[str, object]) -> dict[str, object]: ...
+
+
+@overload
+def _plain(value: object) -> object: ...
+
+
 def _plain(value: object) -> object:
     if is_dataclass(value) and not isinstance(value, type):
         return {
@@ -254,5 +313,5 @@ def _plain(value: object) -> object:
     if isinstance(value, (tuple, list, set, frozenset)):
         return [_plain(item) for item in value]
     if hasattr(value, "value"):
-        return value.value  # type: ignore[union-attr]
+        return value.value
     return value

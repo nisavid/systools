@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
-from .catalogue import Operation, SupervisorRequirement
+from .catalogue import Operation, OperationKind, SupervisorRequirement
 from .dispatch import (
     ApplicationError,
     OperationDispatcher,
@@ -91,15 +91,10 @@ class ApplicationManager:
                         "rerun with --yes after reviewing the complete plan",
                     ),
                 )
-            if prepared.requires_supervisor:
-                if operation.supervisor is SupervisorRequirement.NEVER_START:
-                    raise ApplicationError(
-                        "activation_forbidden",
-                        f"{request.name} must not start the Supervisor",
-                        next_actions=(
-                            "start the Supervisor explicitly if mutation is intended",
-                        ),
-                    )
+            if prepared.requires_supervisor and (
+                operation.kind is OperationKind.QUERY
+                or operation.supervisor is not SupervisorRequirement.NEVER_START
+            ):
                 dispatcher.require_supervisor(request)
             try:
                 value = prepared.execute()

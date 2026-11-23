@@ -124,7 +124,8 @@ class ModelInstallResult:
 
 
 class HubDeletionStrategy(Protocol):
-    expected_freed_size: int
+    @property
+    def expected_freed_size(self) -> int: ...
 
     def execute(self) -> None: ...
 
@@ -433,7 +434,8 @@ class HuggingFaceHubClient:
                 local_files_only=True,
                 force_download=False,
             ).resolve()
-        except Exception as error:
+        # The Hub adapter can fail in several ways; none establishes cache completeness.
+        except Exception as error:  # noqa: BLE001
             return VerificationResult(
                 status="incomplete",
                 evidence="cache-completeness",

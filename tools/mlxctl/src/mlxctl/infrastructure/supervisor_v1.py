@@ -8,9 +8,10 @@ It owns orchestration and policy; adapters own operating-system details.
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping, Protocol, Sequence
+from typing import Protocol
 
 from mlxctl.domain.admission import PressureLevel
 from mlxctl.domain.resources import ActivationPolicy, InferenceService, ServiceRunState
@@ -144,7 +145,8 @@ class OperationalState(Protocol):
 
 
 class ManagedProcess(Protocol):
-    pid: int
+    @property
+    def pid(self) -> int: ...
 
     def poll(self) -> int | None: ...
 
@@ -337,7 +339,7 @@ class Supervisor:
         with self._lock:
             self._gateway.stop(self._drain_timeout)
             self._state = "stopped"
-            self._shedding_new_work = False
+            self._set_shedding_locked(False)
             self._finish_operation_locked(operation_id, "stopped")
             return self._status_locked(operation_id=operation_id)
 
@@ -401,7 +403,8 @@ class Supervisor:
                 process = self._processes.launch(launch.argv, launch.environment)
                 run.process = process
                 identity = self._probe.identity(process)
-            except Exception as error:
+            # Any launch/probe failure must clean up the unverified process.
+            except Exception as error:  # noqa: BLE001
                 if run.process is not None and run.identity is None:
                     self._terminate_direct_locked(run.process)
                 return self._failed_start_locked(
@@ -430,7 +433,8 @@ class Supervisor:
                     )
             try:
                 ready = self._probe.is_ready(endpoint, self._readiness_poll_interval)
-            except Exception:
+            # Readiness failures remain unready until the bounded poll expires.
+            except Exception:  # noqa: BLE001
                 ready = False
             if ready:
                 with self._lock:
@@ -698,8 +702,9 @@ class Supervisor:
         """Return Gateway routes without starting stopped services."""
 
         return tuple(
-            self.resolve(str(service.route))
+            route
             for service in self._desired_state.services()
+            if (route := self.resolve(str(service.route))) is not None
         )
 
     def resolve(self, service: str) -> GatewayRoute | None:

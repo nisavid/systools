@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Callable, Mapping, Protocol
+from typing import Protocol
 from urllib.parse import quote, urlparse
-
 
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_METADATA_BYTES = 6 * 1024 * 1024
@@ -224,7 +224,15 @@ class PsutilMachineInventory:
 
 
 class HubApiPort(Protocol):
-    def model_info(self, repo_id: str, **kwargs: object) -> object: ...
+    def model_info(
+        self,
+        repo_id: str,
+        *,
+        revision: str,
+        files_metadata: bool,
+        securityStatus: bool,
+        timeout: float,
+    ) -> object: ...
 
 
 class MetadataFetchPort(Protocol):
@@ -718,39 +726,39 @@ class _HuggingFaceMetadataFetcher:
             f"{quote(path, safe='/')}"
         )
         timeout = httpx.Timeout(10.0, connect=5.0)
-        with httpx.Client(
-            follow_redirects=True, timeout=timeout, max_redirects=5
-        ) as client:
-            with client.stream(
-                "GET", url, headers=build_hf_headers(token=None)
-            ) as response:
-                if response.status_code == 404:
-                    return None
-                response.raise_for_status()
-                _validate_hugging_face_url(str(response.url))
-                declared_size = response.headers.get("content-length")
-                if declared_size is not None:
-                    try:
-                        if int(declared_size) > max_bytes:
-                            raise ModelIntelligenceError(
-                                "metadata response exceeded the byte limit"
-                            )
-                    except ValueError as error:
-                        raise ModelIntelligenceError(
-                            "metadata response had an invalid content length"
-                        ) from error
-                body = bytearray()
-                for chunk in response.iter_bytes():
-                    body.extend(chunk)
-                    if len(body) > max_bytes:
+        with (
+            httpx.Client(
+                follow_redirects=True, timeout=timeout, max_redirects=5
+            ) as client,
+            client.stream("GET", url, headers=build_hf_headers(token=None)) as response,
+        ):
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            _validate_hugging_face_url(str(response.url))
+            declared_size = response.headers.get("content-length")
+            if declared_size is not None:
+                try:
+                    if int(declared_size) > max_bytes:
                         raise ModelIntelligenceError(
                             "metadata response exceeded the byte limit"
                         )
-                return MetadataPayload(
-                    path=path,
-                    content_type=response.headers.get("content-type", ""),
-                    body=bytes(body),
-                )
+                except ValueError as error:
+                    raise ModelIntelligenceError(
+                        "metadata response had an invalid content length"
+                    ) from error
+            body = bytearray()
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > max_bytes:
+                    raise ModelIntelligenceError(
+                        "metadata response exceeded the byte limit"
+                    )
+            return MetadataPayload(
+                path=path,
+                content_type=response.headers.get("content-type", ""),
+                body=bytes(body),
+            )
 
 
 class _HuggingFaceCacheInventory:
@@ -1083,7 +1091,7 @@ def _estimate_fit(
         )
         kv_source = f"config.json@{envelope.commit_sha}; fp16/bf16 KV scenario"
     else:
-        kv_bytes = _optiq_kv_bytes(
+        kv_bytes = optiq_kv_bytes(
             config,
             kv_config,
             context_tokens=context_tokens,
@@ -1174,22 +1182,28 @@ def _selected_weight_paths(
 def _standard_kv_bytes(
     config: Mapping[str, object], *, context_tokens: int, concurrency: int
 ) -> int | None:
-    fields = (
-        config.get("num_hidden_layers"),
-        config.get("hidden_size"),
-        config.get("num_attention_heads"),
-        config.get("num_key_value_heads"),
-    )
-    if not all(type(value) is int and value > 0 for value in fields):
+    layers = config.get("num_hidden_layers")
+    hidden_size = config.get("hidden_size")
+    attention_heads = config.get("num_attention_heads")
+    kv_heads = config.get("num_key_value_heads")
+    if (
+        type(layers) is not int
+        or layers <= 0
+        or type(hidden_size) is not int
+        or hidden_size <= 0
+        or type(attention_heads) is not int
+        or attention_heads <= 0
+        or type(kv_heads) is not int
+        or kv_heads <= 0
+    ):
         return None
-    layers, hidden_size, attention_heads, kv_heads = fields
     if hidden_size % attention_heads:
         return None
     head_dimension = hidden_size // attention_heads
     return 2 * layers * kv_heads * head_dimension * 2 * context_tokens * concurrency
 
 
-def _optiq_kv_bytes(
+def optiq_kv_bytes(
     config: Mapping[str, object],
     kv_config: object,
     *,
@@ -1224,12 +1238,14 @@ def _optiq_kv_bytes(
     if not isinstance(layers, list) or not layers:
         return None
     bit_sum = 0
+    metadata_bytes_per_token = 0
     layer_indexes: set[int] = set()
     for position, layer in enumerate(layers):
         if not isinstance(layer, dict):
             return None
         bits = layer.get("bits")
         layer_index = layer.get("layer_idx", position)
+        group_size = layer.get("group_size")
         if (
             type(bits) is not int
             or bits not in {2, 3, 4, 5, 6, 8, 16}
@@ -1240,7 +1256,22 @@ def _optiq_kv_bytes(
             return None
         layer_indexes.add(layer_index)
         bit_sum += bits
-    return 2 * bit_sum * kv_heads * head_dimension * context_tokens * concurrency // 8
+        if group_size is not None:
+            values_per_token = 2 * kv_heads * head_dimension
+            if (
+                type(group_size) is not int
+                or group_size <= 0
+                or values_per_token % group_size
+            ):
+                return None
+            # One float16 scale and bias per quantization group for K and V.
+            metadata_bytes_per_token += values_per_token // group_size * 4
+    quantized_bytes_per_token = 2 * bit_sum * kv_heads * head_dimension // 8
+    return (
+        (quantized_bytes_per_token + metadata_bytes_per_token)
+        * context_tokens
+        * concurrency
+    )
 
 
 def _nested(value: Mapping[str, object], *keys: str) -> object | None:

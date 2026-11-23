@@ -8,9 +8,11 @@ import plistlib
 import shutil
 import stat
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import cast
 
 import httpx
 import psutil
@@ -26,12 +28,14 @@ from mlxctl.application.dispatch import ApplicationError
 from mlxctl.application.setup import RemovalInventory, SetupPreflight
 from mlxctl.infrastructure.client_integrations import (
     ClientConfiguration,
+    CodexModelMetadata,
     LocalClientIntegrationFactory,
     SamplingProfile,
 )
 from mlxctl.infrastructure.config_store import ConfigStore
 from mlxctl.infrastructure.gateway_credential import GatewayCredential
 from mlxctl.infrastructure.launchd import LaunchdAdapter
+from mlxctl.infrastructure.model_profiles import ModelProfileCatalogue
 from mlxctl.infrastructure.model_supply import (
     ModelInstallation,
     ModelProvenance,
@@ -124,7 +128,7 @@ class OwnedStateRemover:
             )
         requested = tuple(
             Path(str(item)).expanduser().absolute()
-            for item in parameters.get("paths", ())
+            for item in cast(Iterable[object], parameters.get("paths", ()))
         )
         if any(path not in self._owned for path in requested):
             raise ApplicationError(
@@ -156,7 +160,7 @@ class SystemSetupPreflight:
         return SetupPreflight(
             platform=platform.system().lower(),
             machine=platform.machine().lower(),
-            memory_bytes=int(memory.total),
+            memory_bytes=memory.total,
             disk_free_bytes=shutil.disk_usage(self._paths.data_dir).free,
             online=False if offline else self._online_probe(),
         )
@@ -252,29 +256,41 @@ def client_port(
             parameters.get("endpoint")
             or f"http://{config.gateway.host}:{config.gateway.port}/v1"
         )
+        alias = config.aliases[str(service.model_alias)]
+        model = config.models[alias.installation_name]
+        repository = model.revision.repository
+        revision = model.revision.revision
         raw_sampling = parameters.get("sampling_profiles")
         if not isinstance(raw_sampling, Mapping):
             raw_sampling = stored.sampling if stored is not None else {}
         if not raw_sampling:
-            raw_sampling = default_sampling(name)
+            raw_sampling = default_sampling(repository, revision, name)
         sampling = {
             str(profile): sampling_profile(value)
             for profile, value in raw_sampling.items()
         }
         gateway_credential.load_or_create()
+        display_name = (
+            "Qwen3.6 35B A3B OptiQ 4-bit"
+            if repository == "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit"
+            else repository.rsplit("/", 1)[-1]
+        )
+        context_window = coherent_client_context(
+            service.options.get("max_context"),
+            parameters.get("context_window", stored.context_window if stored else None),
+        )
+        stored_codex_provider = stored.provider if stored and name == "codex" else None
+        if stored_codex_provider in {None, "mlxctl-local"}:
+            stored_codex_provider = "mlx-local"
         return ClientConfiguration(
             gateway_endpoint=endpoint,
             service_name=str(service.route),
-            context_window=optional_int(
-                parameters.get(
-                    "context_window", stored.context_window if stored else None
-                )
-            ),
+            context_window=context_window,
             sampling_profiles=sampling,
             codex_provider_id=str(
                 parameters.get(
                     "provider",
-                    stored.provider if stored and name == "codex" else "mlxctl-local",
+                    stored_codex_provider,
                 )
             ),
             hindsight_provider=str(
@@ -284,12 +300,27 @@ def client_port(
                 )
             ),
             max_concurrent=int(
-                parameters.get(
-                    "max_concurrent",
-                    stored.max_concurrent if stored and stored.max_concurrent else 1,
+                cast(
+                    int | str,
+                    parameters.get(
+                        "max_concurrent",
+                        stored.max_concurrent
+                        if stored and stored.max_concurrent
+                        else 1,
+                    ),
                 )
             ),
             credential_path=paths.gateway_credential,
+            service_identity=str(service.name),
+            codex_model=(
+                CodexModelMetadata(
+                    slug=str(service.route),
+                    display_name=display_name,
+                    description=f"Local mlxctl-managed route for {repository}.",
+                )
+                if name == "codex"
+                else None
+            ),
         )
 
     def record(name: str, value: ClientSettings | None) -> None:
@@ -338,6 +369,22 @@ def client_port(
     )
 
 
+def coherent_client_context(
+    service_context: object, requested_context: object
+) -> int | None:
+    service_value = optional_int(service_context)
+    requested_value = optional_int(requested_context)
+    if (
+        requested_value is not None
+        and service_value is not None
+        and requested_value != service_value
+    ):
+        raise ValueError(
+            "client context_window must match the selected service max_context"
+        )
+    return requested_value or service_value
+
+
 def client_request(
     endpoint: str,
     route: str,
@@ -369,7 +416,8 @@ def client_request(
     response.raise_for_status()
     value = response.json()
     if not isinstance(value, Mapping):
-        raise RuntimeError("Gateway returned a non-object response")
+        # A malformed remote response is a Gateway failure, not a caller type error.
+        raise RuntimeError("Gateway returned a non-object response")  # noqa: TRY004
     return dict(value)
 
 
@@ -417,27 +465,79 @@ def removal_inventory(
 
 def sampling_profile(value: object) -> SamplingProfile:
     if isinstance(value, ClientSamplingSettings):
-        return SamplingProfile(value.temperature, value.top_p, value.max_tokens)
+        return SamplingProfile(
+            temperature=value.temperature,
+            top_p=value.top_p,
+            top_k=value.top_k,
+            min_p=value.min_p,
+            presence_penalty=value.presence_penalty,
+            repetition_penalty=value.repetition_penalty,
+            max_tokens=value.max_tokens,
+            enable_thinking=value.enable_thinking,
+            preserve_thinking=value.preserve_thinking,
+            upstream_profile=value.upstream_profile,
+            source_url=value.source_url,
+            source_revision=value.source_revision,
+        )
     if not isinstance(value, Mapping):
-        raise ValueError("sampling profile must be an object")
+        # Sampling input validation consistently reports invalid values.
+        raise ValueError("sampling profile must be an object")  # noqa: TRY004
     return SamplingProfile(
         temperature=optional_float(value.get("temperature")),
         top_p=optional_float(value.get("top_p")),
+        top_k=optional_int(value.get("top_k")),
+        min_p=optional_float(value.get("min_p")),
+        presence_penalty=optional_float(value.get("presence_penalty")),
+        repetition_penalty=optional_float(value.get("repetition_penalty")),
         max_tokens=optional_int(value.get("max_tokens")),
+        enable_thinking=optional_bool(value.get("enable_thinking")),
+        preserve_thinking=optional_bool(value.get("preserve_thinking")),
+        upstream_profile=optional_string(value.get("upstream_profile")),
+        source_url=optional_string(value.get("source_url")),
+        source_revision=optional_string(value.get("source_revision")),
     )
 
 
-def default_sampling(name: str) -> Mapping[str, ClientSamplingSettings]:
-    if name == "codex":
-        return {"coding": ClientSamplingSettings(temperature=0.0)}
-    if name == "hindsight":
-        return {
-            "verification": ClientSamplingSettings(temperature=0.0),
-            "retain": ClientSamplingSettings(temperature=0.1),
-            "reflect": ClientSamplingSettings(temperature=0.9),
-            "consolidation": ClientSamplingSettings(temperature=0.0),
-        }
-    raise ValueError(f"unsupported Client Integration: {name}")
+_CLIENT_PROFILE_BINDINGS = {
+    "codex": {"coding": "precise-coding-thinking"},
+    "hindsight": {
+        "verification": "non-thinking",
+        "retain": "non-thinking",
+        "reflect": "general-thinking",
+        "consolidation": "non-thinking",
+    },
+}
+
+
+def default_sampling(
+    repository: str, revision: str, name: str
+) -> Mapping[str, ClientSamplingSettings]:
+    bindings = _CLIENT_PROFILE_BINDINGS.get(name)
+    if bindings is None:
+        raise ValueError(f"unsupported Client Integration: {name}")
+    catalogue = ModelProfileCatalogue.load_builtin()
+    result = {}
+    for workload, profile_name in bindings.items():
+        try:
+            profile = catalogue.profile(repository, revision, profile_name)
+        except KeyError:
+            return {}
+        sampling = sampling_profile(profile.parameters)
+        result[workload] = ClientSamplingSettings(
+            temperature=sampling.temperature,
+            top_p=sampling.top_p,
+            top_k=sampling.top_k,
+            min_p=sampling.min_p,
+            presence_penalty=sampling.presence_penalty,
+            repetition_penalty=sampling.repetition_penalty,
+            max_tokens=sampling.max_tokens,
+            enable_thinking=sampling.enable_thinking,
+            preserve_thinking=sampling.preserve_thinking,
+            upstream_profile=profile.name,
+            source_url=profile.source_url,
+            source_revision=profile.source_revision,
+        )
+    return MappingProxyType(result)
 
 
 def configured_model_installations(
@@ -541,8 +641,26 @@ def optional_float(value: object) -> float | None:
     if value is None:
         return None
     if not isinstance(value, int | float) or isinstance(value, bool):
-        raise ValueError("value must be numeric")
+        # JSON field validation reports invalid values, including wrong JSON kinds.
+        raise ValueError("value must be numeric")  # noqa: TRY004
     return float(value)
+
+
+def optional_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if type(value) is not bool:
+        raise ValueError("value must be boolean")
+    return value
+
+
+def optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        # JSON field validation reports invalid values, including wrong JSON kinds.
+        raise ValueError("value must be a string")  # noqa: TRY004
+    return value
 
 
 def tree_size(root: Path) -> int:
