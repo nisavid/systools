@@ -29,7 +29,7 @@ using them. Bind `MAP` and `TICKET` to issue
 numbers in this repository, `BLOCKER_URL` to the prerequisite issue's full URL,
 `TICKET_LABEL` to its Wayfinder type, and the title/body variables to prepared
 content. Bind `DRIVING_DEVELOPER` to the developer driving the map, `nisavid`
-for Ivan’s workflow. Body variables are paths to UTF-8 Markdown files.
+for the maintainer’s workflow. Body variables are paths to UTF-8 Markdown files.
 
 ```sh
 # Create the map, then its children using the returned map number.
